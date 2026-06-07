@@ -1,0 +1,378 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: #0f172a;
+  color: #f8fafc;
+  margin: 0;
+  padding: 20px;
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  border-bottom: 1px solid #334155;
+  padding-bottom: 12px;
+}
+
+h1 { margin: 0; font-size: 1.5rem; color: #38bdf8; }
+
+.status-badge {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+}
+.status-badge.live         { background: #14532d; color: #4ade80; }
+.status-badge.disconnected { background: #7f1d1d; color: #f87171; }
+.status-badge.connecting\.\.\. { background: #1e3a5f; color: #60a5fa; }
+
+/* ── Dashboard two-column layout ─────────────────────────────────────────── */
+.dashboard {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .dashboard { grid-template-columns: 1fr; }
+}
+
+/* ── Left Panel ──────────────────────────────────────────────────────────── */
+.left-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.live-price-card {
+  background: #1e293b;
+  padding: 28px;
+  border-radius: 12px;
+  text-align: center;
+}
+
+.live-price-card label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.price-display {
+  font-size: 3rem;
+  font-weight: 800;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+  margin: 8px 0;
+}
+
+.timestamp { color: #94a3b8; font-size: 0.8rem; margin: 0; }
+
+.market-info {
+  background: #1e293b;
+  padding: 20px;
+  border-radius: 12px;
+}
+.market-info h2 { margin: 0 0 8px 0; font-size: 1.1rem; }
+.description { color: #cbd5e1; margin: 0 0 16px 0; font-size: 0.9rem; }
+.metadata { font-size: 0.82rem; color: #94a3b8; display: flex; flex-direction: column; gap: 4px; }
+.metadata strong { color: #cbd5e1; }
+.metadata a { color: #38bdf8; text-decoration: none; margin-left: 4px; }
+
+.price-list { background: #1e293b; padding: 20px; border-radius: 12px; }
+.price-list h3 { margin: 0 0 12px 0; font-size: 1rem; color: #cbd5e1; }
+
+.contract-table { display: flex; flex-direction: column; gap: 6px; }
+
+.contract-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #334155;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  gap: 8px;
+}
+.contract-row .strike   { font-weight: 600; flex: 1.5; }
+.contract-row .yes-price { color: #4ade80; flex: 1; text-align: center; }
+.contract-row .no-price  { color: #f87171; flex: 1; text-align: right; }
+.payout-hint { color: #fef08a; margin-left: 6px; font-size: 0.8rem; }
+
+/* ── Right Panel ─────────────────────────────────────────────────────────── */
+.right-panel {
+  position: sticky;
+  top: 20px;
+}
+
+.bot-panel {
+  background: #1e293b;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.bot-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #334155;
+}
+.bot-panel-header h2 { margin: 0; font-size: 1.1rem; color: #f8fafc; }
+
+.bot-status-dot {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.bot-status-dot.active { background: #14532d; color: #4ade80; }
+.bot-status-dot.stale  { background: #3b1515; color: #f87171; }
+
+/* Mode toggle (Paper / Live) */
+.mode-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid #334155;
+  background: #0f172a;
+}
+
+.mode-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.mode-track {
+  position: relative;
+  width: 44px;
+  height: 22px;
+  background: #475569;
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+
+.mode-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: #f8fafc;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.mode-switch.live .mode-track  { background: #dc2626; }
+.mode-switch.live .mode-thumb  { transform: translateX(22px); }
+.mode-switch.paper .mode-track { background: #475569; }
+
+.mode-text {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.mode-switch.live  .mode-text { color: #f87171; }
+.mode-switch.paper .mode-text { color: #94a3b8; }
+
+/* Profit card */
+.profit-card {
+  padding: 24px 20px;
+  border-bottom: 1px solid #334155;
+  text-align: center;
+}
+.profit-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+.profit-value {
+  font-size: 2.8rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.profit-meta {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-top: 6px;
+}
+
+/* Current trade card (Kalshi Portfolio Style) */
+.position-card {
+  padding: 20px;
+  border-bottom: 1px solid #334155;
+}
+
+.position-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.position-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #f8fafc;
+}
+
+.side-badge {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: white;
+}
+
+.position-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.metric-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.metric {
+  padding: 12px;
+  background: #0f172a;
+  border-radius: 6px;
+}
+
+.metric-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.metric-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 2px;
+}
+
+.metric-sublabel {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.payout-section {
+  padding: 12px;
+  background: #0f172a;
+  border-radius: 6px;
+}
+
+.payout-section .metric {
+  background: transparent;
+  padding: 0;
+}
+
+.pnl-section {
+  padding: 16px 12px;
+  background: #0f172a;
+  border-radius: 6px;
+  text-align: center;
+  border-top: 1px solid #334155;
+  margin-top: 8px;
+}
+
+.pnl-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.tp-sl-hint {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.no-trade {
+  font-style: italic;
+  color: #64748b;
+  font-size: 0.9rem;
+  text-align: center;
+  padding: 12px 0;
+}
+
+/* Trade history */
+.trade-history { padding: 20px; }
+.history-list  { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  background: #0f172a;
+  border-radius: 5px;
+}
+.history-result {
+  font-weight: 700;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.history-result.tp      { background: #14532d; color: #4ade80; }
+.history-result.sl      { background: #7f1d1d; color: #f87171; }
+.history-result.settled { background: #1e3a5f; color: #60a5fa; }
+.history-contract { flex: 1; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-pnl { font-weight: 600; flex-shrink: 0; }
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+footer {
+  text-align: center;
+  margin-top: 40px;
+  color: #475569;
+  font-size: 0.75rem;
+}
+footer code {
+  background: #1e293b;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}

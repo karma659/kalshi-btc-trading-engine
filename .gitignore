@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Environment variables (never commit credentials)
+/.env
+.env
+.env.local
+.env.*.local
+
+# Kalshi private key (NEVER commit!)
+*.pem
+kalshi-private-key.pem
+
+# Runtime data & generated artifacts (not source)
+backend/past_trades/
+*.jsonl
+
+# OS / editor cruft
+.DS_Store
+*.log
