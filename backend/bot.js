@@ -15,12 +15,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { kalshiFee } = require('./fees');
 require('dotenv').config();
 
-// const strategy1 = require('./strategy6');
-const strategy = require('./strategy4');
-// const strategy3 = require('./strategy3');
-// const strategy5 = require('./strategy5');
+// V7 (Favorite-Longshot Harvest) is the deployed strategy — the only one that backtests
+// net-positive after fees (held to settlement). Swap the require to run a different module.
+const strategy = require('./strategy7');
 const strategies = [strategy];
 
 const pastTradesDir = path.join(__dirname, 'past_trades');
@@ -28,14 +28,17 @@ if (!fs.existsSync(pastTradesDir)) fs.mkdirSync(pastTradesDir);
 
 const tradesFile  = path.join(pastTradesDir, 'trades.txt');
 const stateFile   = path.join(pastTradesDir, 'bot-state.json');
+const configFile  = path.join(pastTradesDir, 'bot-config.json');
 
-// Active Configuration (Hot-reloaded directly from this file)
+// In-memory config. The single source of truth is bot-config.json (hot-reloaded on
+// change); these values are only the fallback used if that file is missing/corrupt.
+// mode defaults to 'paper' so live trading is always a deliberate, explicit choice.
 let config = {
-  targetBet: 10.50,
-  takeProfit: 1.20, 
-  stopLoss: -2.80,
+  targetBet: 15.50,
+  takeProfit: 2.00,
+  stopLoss: -6.80,
   trailingDrop: 0.10,
-  hardExitPct: 0.40, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+  hardExitPct: 0.90, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
   mode: 'paper'
 };
 
@@ -51,6 +54,7 @@ strategies.forEach(s => {
 
 let lastTickAt = 0;          // when tick() last ran — drives the dashboard's "live" indicator
 let entryCooldowns = {};     // suppress entries until this timestamp after an order error (per strategy)
+let reconcileDone = false;   // have we adopted any pre-existing LIVE position yet? (once per live session)
 
 // ─── Persistence ────────────────────────────────────────────────────────────
 
@@ -99,12 +103,23 @@ function saveState() {
   }
 }
 
-// ─── Mode (paper | live) ──────────────────────────────────────────────────────
-// Cached so the hot path doesn't read disk repeatedly. setMode() updates the cache
-// immediately so a dashboard toggle in the same process takes effect at once.
+// ─── Config & mode (paper | live) ──────────────────────────────────────────────
+// Single source of truth is bot-config.json. We hot-reload it on change (mtime poll,
+// throttled so the 50ms loop doesn't stat disk every tick) and write it back on changes
+// made in-process (e.g. a dashboard mode toggle), so config survives restarts.
 let lastConfigReadAt = 0;
 const CONFIG_CACHE_MS = 1000;
-let lastFileConfigStr = '';
+let lastConfigMtimeMs = 0;
+
+// Persist the current in-memory config to disk (used by setMode and to seed the file).
+function writeConfig() {
+  try {
+    fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
+    try { lastConfigMtimeMs = fs.statSync(configFile).mtimeMs; } catch (_) {}
+  } catch (err) {
+    console.warn('[ENGINE] Could not write bot-config.json:', err.message);
+  }
+}
 
 function loadConfig() {
   const now = Date.now();
@@ -112,28 +127,31 @@ function loadConfig() {
   lastConfigReadAt = now;
 
   try {
-    const code = fs.readFileSync(__filename, 'utf8');
-    // Forgiving regex: ignores missing semicolons and formatting changes
-    const match = code.match(/let\s+config\s*=\s*({[^}]+})/);
-    
-    if (match && match[1] !== lastFileConfigStr) {
-      lastFileConfigStr = match[1];
-      const parsed = new Function('return ' + match[1])();
-      let updated = false;
-      
-      if (parsed.targetBet !== undefined && config.targetBet !== Number(parsed.targetBet)) { config.targetBet = Number(parsed.targetBet); updated = true; }
-      if (parsed.takeProfit !== undefined && config.takeProfit !== Number(parsed.takeProfit)) { config.takeProfit = Number(parsed.takeProfit); updated = true; }
-      if (parsed.stopLoss !== undefined && config.stopLoss !== Number(parsed.stopLoss)) { config.stopLoss = Number(parsed.stopLoss); updated = true; }
-      if (parsed.trailingDrop !== undefined && config.trailingDrop !== Number(parsed.trailingDrop)) { config.trailingDrop = Number(parsed.trailingDrop); updated = true; }
-      if (parsed.hardExitPct !== undefined && config.hardExitPct !== Number(parsed.hardExitPct)) { config.hardExitPct = Number(parsed.hardExitPct); updated = true; }
-      if (parsed.mode !== undefined && config.mode !== parsed.mode) { config.mode = parsed.mode === 'live' ? 'live' : 'paper'; updated = true; }
+    if (!fs.existsSync(configFile)) { writeConfig(); return config; } // seed from defaults
 
-      if (updated) {
-        console.log(`\n[ENGINE] ⚙️ Config Hot-Reloaded! Bet=$${config.targetBet.toFixed(2)} | TP=+$${config.takeProfit.toFixed(2)} | SL=-$${Math.abs(config.stopLoss).toFixed(2)}\n`);
+    const mtime = fs.statSync(configFile).mtimeMs;
+    if (mtime === lastConfigMtimeMs) return config; // unchanged since last read
+    lastConfigMtimeMs = mtime;
+
+    const parsed = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+    let updated = false;
+    const setNum = (k) => {
+      if (parsed[k] !== undefined && Number.isFinite(Number(parsed[k])) && config[k] !== Number(parsed[k])) {
+        config[k] = Number(parsed[k]); updated = true;
       }
+    };
+    setNum('targetBet'); setNum('takeProfit'); setNum('stopLoss');
+    setNum('trailingDrop'); setNum('hardExitPct');
+    if (parsed.mode !== undefined) {
+      const m = parsed.mode === 'live' ? 'live' : 'paper';
+      if (config.mode !== m) { config.mode = m; updated = true; }
+    }
+
+    if (updated) {
+      console.log(`\n[ENGINE] ⚙️ Config Hot-Reloaded! Mode=${config.mode.toUpperCase()} | Bet=$${config.targetBet.toFixed(2)} | TP=+$${config.takeProfit.toFixed(2)} | SL=-$${Math.abs(config.stopLoss).toFixed(2)}\n`);
     }
   } catch (err) {
-    console.error('\n[ENGINE] ⚠️ Hot-reload parsing error:', err.message, '\n');
+    console.error('\n[ENGINE] ⚠️ Config load error (keeping current values):', err.message, '\n');
   }
   return config;
 }
@@ -145,6 +163,7 @@ function getMode() {
 function setMode(mode) {
   const next = mode === 'live' ? 'live' : 'paper';
   config.mode = next;
+  writeConfig(); // persist so the toggle survives restarts and isn't clobbered by reload
   return next;
 }
 
@@ -424,7 +443,11 @@ async function closeCurrent(strategyName, result, bid) {
 
   const exited = pos.numContracts - remaining;
   if (exited > 0) {
-    const pnl = exited * (bid - pos.entryPrice);
+    // Net of Kalshi fees on BOTH legs (entry + this pre-settlement sell). Note the live
+    // exit crosses the book at a 1¢ limit (exitConfirmed), so on a thin book the true fill
+    // can sit below this top-of-book `bid` — reported PnL is a best case, not guaranteed.
+    const fees = kalshiFee(pos.entryPrice, exited) + kalshiFee(bid, exited);
+    const pnl = exited * (bid - pos.entryPrice) - fees;
     stratState.totalProfit += pnl;
     const label = result === 'TP' ? 'TAKE PROFIT' : 'STOP LOSS';
     logTrade(`[${strategyName}] ${label} | ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | x${exited} | ${pos.subtitle} | ${pos.side.toUpperCase()}`);
@@ -448,6 +471,79 @@ async function closeCurrent(strategyName, result, bid) {
   }
 }
 
+// ─── Startup position reconciliation ───────────────────────────────────────────
+// loadState() deliberately never restores an open position across restarts, and the
+// poller hard-exits at XX:59 ([index.js]). Together that means a real Kalshi position
+// held across a restart would be invisible to the engine — unmanaged and unstopped.
+// On the first LIVE tick we read /portfolio/positions and adopt any untracked holding
+// into a free strategy slot so it gets the normal TP/SL/trailing management (and exit).
+async function reconcilePositions(markets) {
+  try {
+    const res = await kalshiAuthFetch('GET', '/portfolio/positions');
+    const mps = (res.market_positions || []).filter(
+      p => (Math.abs(parseFloat(p.position_fp ?? p.position ?? 0)) || 0) >= 1
+    );
+    if (mps.length === 0) return;
+
+    const tracked = new Set();
+    for (const name in state.strategies) {
+      const p = state.strategies[name].position;
+      if (p) tracked.add(p.ticker);
+    }
+
+    for (const mp of mps) {
+      if (tracked.has(mp.ticker)) continue;
+
+      const raw = parseFloat(mp.position_fp ?? mp.position ?? 0);
+      const qty = Math.abs(Math.round(raw));
+      const side = raw >= 0 ? 'yes' : 'no';
+      const myMarket = markets.find(m => m.ticker === mp.ticker);
+
+      // Entry-price basis: prefer the API cost basis if it implies a sane per-contract
+      // price; otherwise re-base at the current ask so the orphan at least gains a stop
+      // from now on. (Re-basing makes PnL start ~0 — protective, not historically exact.)
+      let entryPrice = null;
+      const exposureCents = parseFloat(mp.market_exposure ?? mp.cost_basis ?? NaN);
+      if (Number.isFinite(exposureCents) && qty > 0) {
+        const per = (exposureCents / 100) / qty;
+        if (per > 0.01 && per < 1) entryPrice = per;
+      }
+      if (entryPrice == null && myMarket) {
+        entryPrice = parseFloat(side === 'yes' ? (myMarket.yes_ask_dollars || 0) : (myMarket.no_ask_dollars || 0)) || null;
+      }
+      if (entryPrice == null) {
+        log(`⚠️ Untracked LIVE position ${mp.ticker} x${qty} — no usable price; leaving it, manage manually.`);
+        continue;
+      }
+
+      const freeStrat = strategies.find(s => !state.strategies[s.name].position);
+      if (!freeStrat) {
+        log(`⚠️ Untracked LIVE position ${mp.ticker} x${qty} — no free strategy slot to manage it.`);
+        continue;
+      }
+
+      state.strategies[freeStrat.name].position = {
+        ticker:       mp.ticker,
+        subtitle:     myMarket?.subtitle || mp.ticker,
+        side,
+        entryPrice,
+        numContracts: qty,
+        cost:         qty * entryPrice,
+        currentBid:   entryPrice,
+        pnl:          0,
+        peakPnl:      0,
+        enteredAt:    new Date().toISOString(),
+        strategy:     freeStrat.name,
+        reconciled:   true
+      };
+      tracked.add(mp.ticker);
+      logTrade(`RECONCILED untracked LIVE position | ${myMarket?.subtitle || mp.ticker} | ${side.toUpperCase()} | x${qty} | basis $${entryPrice.toFixed(2)} | now managed by ${freeStrat.name}`);
+    }
+  } catch (err) {
+    log(`reconcilePositions error: ${err.message}`);
+  }
+}
+
 // ─── Trading tick ─────────────────────────────────────────────────────────────
 // Called once per poll cycle by index.js with the already-fetched market list and
 // BTC price. Performs entry or position management. Does NOT fetch or schedule.
@@ -467,6 +563,12 @@ async function tick(markets, btcPrice) {
     logStatus('No markets, waiting...');
     saveState();
     return;
+  }
+
+  // One-time adoption of any pre-existing LIVE position so it's managed, not abandoned.
+  if (!reconcileDone && TRADING_ENABLED && getMode() === 'live') {
+    reconcileDone = true; // set before awaiting so a hiccup can't loop this every tick
+    await reconcilePositions(markets);
   }
 
   // Guard to prevent strategies from buying the exact same contract or opposing sides
@@ -551,10 +653,12 @@ async function tick(markets, btcPrice) {
       const myMarket = markets.find(m => m.ticker === stratState.position.ticker);
 
       if (!myMarket) {
-        // Market disappeared (settlement between cycles) — treat as expiry
+        // Market disappeared (settlement between cycles) — treat as expiry. A contract
+        // held to settlement pays $1/$0 with NO exit fee, but the entry fee was still paid.
         const bidFallback = stratState.position.side === 'yes' ? 1.00 : 0.00;
         const exitValue = stratState.position.numContracts * bidFallback;
-        const pnl = exitValue - stratState.position.cost;
+        const entryFee = kalshiFee(stratState.position.entryPrice, stratState.position.numContracts);
+        const pnl = exitValue - stratState.position.cost - entryFee;
 
         logTrade(`MARKET SETTLED | ${stratState.position.subtitle} | PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | Strategy: ${strategy.name}`);
         stratState.totalProfit += pnl;
@@ -604,7 +708,7 @@ async function tick(markets, btcPrice) {
 
 async function init() {
   loadState();
-  console.log(`[ENGINE] Starting with 4 parallel strategies.`);
+  console.log(`[ENGINE] Starting with ${strategies.length} ${strategies.length === 1 ? 'strategy' : 'parallel strategies'}: ${strategies.map(s => s.name).join(', ')}`);
   console.log(`[ENGINE] Initial mode: ${getMode().toUpperCase()} (toggle from the dashboard)`);
   const currentConfig = loadConfig();
   console.log(`[ENGINE] Active Config: Bet=$${currentConfig.targetBet.toFixed(2)} | TP=+$${currentConfig.takeProfit.toFixed(2)} | SL=-$${Math.abs(currentConfig.stopLoss).toFixed(2)}`);

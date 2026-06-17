@@ -4,15 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kalshi BTC Event Viewer</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="style.css?v=2">
+    <!-- Vendored locally (frontend/vendor/) so the dashboard never depends on a CDN —
+         works offline and can't be blocked by ad-blockers/privacy extensions.
+         Babel pinned to stable 7.x (8.0.0 broke the in-browser text/babel transform).
+         ?v= query strings bust the browser cache after the CDN→local switch. -->
+    <script src="vendor/react.development.js?v=2"></script>
+    <script src="vendor/react-dom.development.js?v=2"></script>
+    <script src="vendor/babel.min.js?v=2"></script>
 </head>
 <body>
     <div id="root"></div>
 
     <!-- Load our React component -->
-    <script type="text/babel" src="App.js"></script>
+    <script type="text/babel" src="App.js?v=2"></script>
 </body>
 </html>

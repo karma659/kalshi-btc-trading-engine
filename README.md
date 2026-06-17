@@ -148,10 +148,11 @@ Strategy logic is fully decoupled from execution — each module is pure decisio
 | Variant | Idea |
 |---|---|
 | **V1 — Volatility Scalping** | Trade contracts near the 50% coin-flip band to harvest short-term price swings. |
-| **V2 — Favorite** | Buy the side the market already prices as a strong favorite (65–78% implied), betting it keeps drifting toward resolution. |
 | **V3 — Momentum** | Track BTC over a ~5 min rolling window; only buy YES on uptrends, NO on downtrends. |
 | **V4 — Fast Momentum Scalp** | A micro-window (~2 s) breakout version of V3 for fast moves. |
-| **V5 — Fair-Value / Statistical Edge** | Compute a contract's *fair* probability from BTC's distance-to-strike and volatility, and trade only when the market price diverges from fair value. |
+| **V7 — Favorite-Longshot Harvest** | Buy underpriced favorites (ask 0.85–0.93) in the last minutes and hold to settlement. **The only strategy net-positive after fees** — see below. |
+| **V8 — Momentum Capture** | Momentum scalp with a small take-profit. Backtested **net-negative** (fee-bled, ≈ −$1.5/trade). |
+| **V9 — SMI Mean-Reversion** | Fade oscillator (SMI) extremes. Backtested **net-negative** — the signal was anti-predictive. |
 
 ---
 
@@ -178,6 +179,31 @@ No strategy touches capital before it has been replayed against recorded history
 ```
 
 > **Read this honestly:** these are *in-sample* results under a fixed exit configuration, and most naive variants are **net-negative after the bid/ask spread** despite >50% win rates — a textbook reminder that hit-rate ≠ profitability once costs are paid. That is precisely why the harness exists: **to surface unprofitable ideas offline, before risking a cent.** Strong win rates with negative P&L point straight at the spread/exit asymmetry as the thing to fix next.
+
+---
+
+## Strategy research: where the edge actually is (fee-aware)
+
+The harness was upgraded to model **Kalshi's per-trade fee** (`ceil(0.07·p·(1−p)·contracts)`, [`fees.js`](backend/fees.js)) and to price every exit at the **bid** it would actually cross. Once costs are real, the conclusions sharpen — and most ideas die:
+
+| Approach | Result (net of fees, ~7 days) | Why |
+|---|---|---|
+| Momentum scalps (V3/V4/V8) | **≈ −$2,000** | Each round-trip pays the spread twice + a fee twice (~5.8¢/contract on ~50% books). Even *gross* it's flat — short-horizon BTC moves don't predict settlement. |
+| SMI mean-reversion (V9) | **−$274** (even held to settlement) | A 37% win rate: fading oscillator extremes bought the *losing* side. The signal was anti-predictive. |
+| Fair-value / relative-value (V5, V7-rv) | **negative** | A simple BTC vol model can't out-price Kalshi's market-maker; when the model disagrees enough to trade, the model is the thing that's wrong. |
+| **Favorite-Longshot Harvest (V7)** | **net-positive** | The one structural edge that survived. |
+
+**The favorite-longshot bias.** A calibration study over the 11,633 snapshots — realized settlement rate vs. price — revealed a strong, monotonic mispricing:
+
+| Ask price | Implied win | **Realized win** |
+|---|---|---|
+| 0.05–0.10 (longshots) | 8% | **1.6%** |
+| 0.50–0.55 | 53% | 51.7% |
+| 0.85–0.90 (favorites) | 88% | **~95%** |
+
+Retail overpays for cheap lottery-ticket longshots, leaving the favorite side systematically **underpriced**. Buying favorites (ask ~0.85–0.93) in the final minutes and **holding to settlement** (so the spread is paid once, on entry, and exit is free at $1/$0) harvests it: **~94% win at an avg price ~0.89 ⇒ a ~5% edge.**
+
+> **The discipline that matters more than the result:** that edge is *thin* and measured on a single ~7-day window. Tuning the exit (TP/SL) or bet size can't manufacture more — bet size is a pure multiplier, and the exit only controls how often you pay the spread. So the strategy is deliberately **not** over-tuned, and the honest next step is **out-of-sample / walk-forward validation**, not a prettier in-sample curve. Distinguishing a real structural edge from overfit noise — and refusing to ship the latter — is the whole point.
 
 ---
 
