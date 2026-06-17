@@ -22,16 +22,18 @@ const readline = require('readline');
 const { kalshiFee } = require('./fees');
 
 const strategy1 = require('./strategy');
+const strategy2 = require('./strategy2');
 const strategy3 = require('./strategy3');
 const strategy4 = require('./strategy4');
+const strategy5 = require('./strategy5');
+const strategy6 = require('./strategy6');
 const strategy7 = require('./strategy7');
 const strategy8 = require('./strategy8');
 const strategy9 = require('./strategy9');
 
 // All strategies by default; set ONLY=V7 (substring match) to isolate one — the realistic
 // deployment test, since the live engine runs a single strategy without ticker contention.
-// (V2/V5/V6 modules were removed from the repo; they're omitted here to keep it runnable.)
-const allStrategies = [strategy1, strategy3, strategy4, strategy7, strategy8, strategy9];
+const allStrategies = [strategy1, strategy2, strategy3, strategy4, strategy5, strategy6, strategy7, strategy8, strategy9];
 const strategies = process.env.ONLY
   ? allStrategies.filter(s => s.name.toLowerCase().includes(process.env.ONLY.toLowerCase()))
   : allStrategies;

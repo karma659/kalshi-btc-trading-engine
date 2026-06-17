@@ -148,8 +148,11 @@ Strategy logic is fully decoupled from execution — each module is pure decisio
 | Variant | Idea |
 |---|---|
 | **V1 — Volatility Scalping** | Trade contracts near the 50% coin-flip band to harvest short-term price swings. |
+| **V2 — Favorite** | Buy the side the market already prices as a strong favorite (65–78% implied), betting it keeps drifting toward resolution. |
 | **V3 — Momentum** | Track BTC over a ~5 min rolling window; only buy YES on uptrends, NO on downtrends. |
 | **V4 — Fast Momentum Scalp** | A micro-window (~2 s) breakout version of V3 for fast moves. |
+| **V5 — Fair-Value / Statistical Edge** | Compute a contract's *fair* probability from BTC's distance-to-strike and volatility, and trade only when the market price diverges from fair value. |
+| **V6 — High-Band** | Buy the >50% side of near-coinflip contracts (40–60% band). |
 | **V7 — Favorite-Longshot Harvest** | Buy underpriced favorites (ask 0.85–0.93) in the last minutes and hold to settlement. **The only strategy net-positive after fees** — see below. |
 | **V8 — Momentum Capture** | Momentum scalp with a small take-profit. Backtested **net-negative** (fee-bled, ≈ −$1.5/trade). |
 | **V9 — SMI Mean-Reversion** | Fade oscillator (SMI) extremes. Backtested **net-negative** — the signal was anti-predictive. |
