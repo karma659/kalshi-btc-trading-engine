@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>V13 Dashboard - Live Paper Trading</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { margin-bottom: 20px; color: #fff; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+    .stat { background: #1a1a1a; padding: 20px; border-radius: 8px; border-left: 4px solid #0088ff; }
+    .stat-label { font-size: 12px; color: #888; text-transform: uppercase; margin-bottom: 8px; }
+    .stat-value { font-size: 24px; font-weight: bold; }
+    .stat-value.positive { color: #00dd00; }
+    .stat-value.negative { color: #ff4444; }
+    .stat-value.neutral { color: #ffaa00; }
+    .position { background: #1a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #ffaa00; margin-bottom: 20px; }
+    .position-label { font-size: 12px; color: #888; text-transform: uppercase; margin-bottom: 8px; }
+    .position-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
+    .detail { }
+    .detail-label { font-size: 11px; color: #666; }
+    .detail-value { font-size: 16px; font-weight: bold; margin-top: 4px; }
+    .trades { }
+    .trade-item { background: #1a1a1a; padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #555; }
+    .trade-item.entry { border-left-color: #0088ff; }
+    .trade-item.exit { border-left-color: #00dd00; }
+    .trade-item.exit.loss { border-left-color: #ff4444; }
+    .trade-time { font-size: 12px; color: #888; }
+    .trade-text { margin-top: 8px; font-size: 14px; }
+    .trade-pnl { font-weight: bold; margin-left: 10px; }
+    .trade-pnl.positive { color: #00dd00; }
+    .trade-pnl.negative { color: #ff4444; }
+    .last-update { text-align: center; margin-top: 20px; font-size: 12px; color: #666; }
+    .status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+    .status.online { background: #00dd00; }
+    .status.offline { background: #ff4444; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1><span class="status online"></span>V13 Dashboard</h1>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Total Profit</div>
+        <div class="stat-value" id="totalProfit">$0.00</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Balance</div>
+        <div class="stat-value" id="balance">$10,000.00</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Total Trades</div>
+        <div class="stat-value" id="tradeCount">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value" id="winRate">—</div>
+      </div>
+    </div>
+
+    <div id="positionContainer" style="display:none;">
+      <div class="position">
+        <div class="position-label">Current Position</div>
+        <div class="position-detail">
+          <div class="detail">
+            <div class="detail-label">Side</div>
+            <div class="detail-value" id="posSide">—</div>
+          </div>
+          <div class="detail">
+            <div class="detail-label">Entry Price</div>
+            <div class="detail-value" id="posEntry">—</div>
+          </div>
+          <div class="detail">
+            <div class="detail-label">Contracts</div>
+            <div class="detail-value" id="posContracts">—</div>
+          </div>
+          <div class="detail">
+            <div class="detail-label">Held</div>
+            <div class="detail-value" id="posHeld">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <h2 style="margin-top: 30px; margin-bottom: 15px;">Trade History</h2>
+    <div class="trades" id="tradesContainer">
+      <p style="color: #666; text-align: center; padding: 20px;">No trades yet. V13 is watching markets...</p>
+    </div>
+
+    <div class="last-update">
+      Last updated: <span id="lastUpdate">—</span> | Auto-refresh every 2 seconds
+    </div>
+  </div>
+
+  <script>
+    const V13_STATE_URL = '/api/v13-state';
+    let positionStartTime = null;
+
+    async function update() {
+      try {
+        // Try to read state from a simple API endpoint
+        // For now, read from the state file via a simple server
+        const response = await fetch('/api/v13-state');
+        if (!response.ok) throw new Error('API not available');
+        const data = await response.json();
+
+        // Update stats
+        const totalProfit = data.totalProfit || 0;
+        const balance = data.balance || 10000;
+        const trades = data.trades || [];
+        const winCount = trades.filter(t => t.pnl > 0).length;
+        const winRate = trades.length > 0 ? ((winCount / trades.length) * 100).toFixed(1) : '—';
+
+        document.getElementById('totalProfit').textContent = `$${totalProfit.toFixed(2)}`;
+        document.getElementById('totalProfit').className = `stat-value ${totalProfit >= 0 ? 'positive' : 'negative'}`;
+
+        document.getElementById('balance').textContent = `$${balance.toFixed(2)}`;
+        document.getElementById('tradeCount').textContent = trades.length;
+        document.getElementById('winRate').textContent = trades.length > 0 ? `${winRate}%` : '—';
+
+        // Update current position
+        const pos = data.position;
+        if (pos) {
+          const now = Date.now();
+          const heldMs = now - pos.enteredAt;
+          const heldMin = Math.floor(heldMs / 60000);
+          const heldSec = Math.floor((heldMs % 60000) / 1000);
+
+          document.getElementById('posSide').textContent = pos.side.toUpperCase();
+          document.getElementById('posEntry').textContent = `$${pos.entryPrice.toFixed(2)}`;
+          document.getElementById('posContracts').textContent = `x${pos.contracts}`;
+          document.getElementById('posHeld').textContent = `${heldMin}m ${heldSec}s`;
+          document.getElementById('positionContainer').style.display = 'block';
+        } else {
+          document.getElementById('positionContainer').style.display = 'none';
+        }
+
+        // Update trades list
+        const container = document.getElementById('tradesContainer');
+        if (trades.length === 0) {
+          container.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">No trades yet. V13 is watching markets...</p>';
+        } else {
+          // Show last 20 trades, newest first
+          container.innerHTML = trades.slice(-20).reverse().map(t => {
+            const isExit = t.exitReason;
+            const isLoss = t.pnl < 0;
+            return `
+              <div class="trade-item ${isExit ? (isLoss ? 'exit loss' : 'exit') : 'entry'}">
+                <div class="trade-time">${new Date(t.enteredAtISO || t.enteredAt).toLocaleTimeString()}</div>
+                <div class="trade-text">
+                  ${isExit
+                    ? `CLOSE ${t.side.toUpperCase()} | held ${t.holdSeconds}s | <span class="trade-pnl ${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</span>`
+                    : `OPEN ${t.side.toUpperCase()} @ $${t.entryPrice.toFixed(2)} | x${t.contracts}`
+                  }
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+      } catch (e) {
+        console.log('API not ready yet (run-strategy13.js must expose state endpoint)');
+      }
+    }
+
+    // Initial update
+    update();
+    // Auto-refresh every 2 seconds
+    setInterval(update, 2000);
+  </script>
+</body>
+</html>

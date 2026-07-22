@@ -1,0 +1,86 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © karmakarakash659
+//
+// Sell-only strategy derived from the "Buy/Sell" indicator.
+// The buy side is intentionally dropped — only the (reliable) SELL signal is traded, as a short.
+
+//@version=5
+strategy("Sell-Only Strategy",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 100,
+     pyramiding           = 0,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.04,      // adjust to your instrument, or override in Properties tab
+     slippage             = 1,
+     calc_on_every_tick   = false)
+
+// ============================================================
+//  Inputs
+// ============================================================
+useFastExit = input.bool(true,  "Fast midpoint exit (original logic)", group = "Exits")
+useTPSL     = input.bool(true,  "Use fixed Take Profit / Stop Loss",   group = "Exits")
+tpPerc      = input.float(1.0,  "Take Profit %", minval = 0, step = 0.1, group = "Exits") / 100.0
+slPerc      = input.float(1.0,  "Stop Loss %",   minval = 0, step = 0.1, group = "Exits") / 100.0
+graceFrom   = input.int(3, "Fast-exit armed from bar", minval = 0, group = "Exits")
+graceTo     = input.int(7, "Fast-exit armed until bar", minval = 1, group = "Exits")
+
+// ============================================================
+//  Signal logic (unchanged from the indicator, sell side only)
+// ============================================================
+bearishEC = close < open[1] and close[1] > open[1]
+
+rsio  = ta.rsi(open,     3)
+rsic  = ta.rsi(close,    3)
+rsipo = ta.rsi(open[1],  3)
+rsipc = ta.rsi(close[1], 3)
+
+rsioverbought = rsio > 70
+sellcond      = rsioverbought and rsio > rsipo and rsic < rsipc and bearishEC
+
+// ============================================================
+//  Entry — short only
+// ============================================================
+if sellcond and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+
+// ============================================================
+//  Exit 1 — fixed TP / SL (backtestable, handles intrabar)
+//  Short: profit target sits BELOW entry, stop sits ABOVE entry.
+// ============================================================
+if useTPSL and strategy.position_size < 0
+    tpPrice = strategy.position_avg_price * (1.0 - tpPerc)
+    slPrice = strategy.position_avg_price * (1.0 + slPerc)
+    strategy.exit("TP/SL", from_entry = "Short", limit = tpPrice, stop = slPrice)
+
+// ============================================================
+//  Exit 2 — original "fast midpoint" exit.
+//  In the indicator this armed 3–7 bars after the signal and
+//  fired when the bar midpoint crossed back above the signal price.
+//  Here it is expressed against the actual short entry price.
+// ============================================================
+var float entryRef      = na
+var int   entryBarIndex = na
+
+// detect the bar we flipped into a short
+if strategy.position_size < 0 and (na(strategy.position_size[1]) or strategy.position_size[1] >= 0)
+    entryRef      := strategy.position_avg_price
+    entryBarIndex := bar_index
+
+barsSinceEntry = na(entryBarIndex) ? na : bar_index - entryBarIndex
+midpoint       = (open + close) / 2.0
+
+fastExit = useFastExit and strategy.position_size < 0 and not na(entryRef)
+     and barsSinceEntry >= graceFrom and barsSinceEntry <= graceTo
+     and midpoint > entryRef
+
+if fastExit
+    strategy.close("Short", comment = "Fast Exit")
+
+// ============================================================
+//  Visuals
+// ============================================================
+plotshape(sellcond, style = shape.labeldown, color = color.red, size = size.tiny,
+     title = "Sell Signal", location = location.abovebar, text = "SELL")
+plot(strategy.position_size < 0 ? entryRef : na, "Short entry ref", color = color.orange, style = plot.style_linebr)

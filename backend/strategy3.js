@@ -1,12 +1,6 @@
 /**
- * Trading Strategy Module - V3 (Momentum / Predictive)
- *
- * Strategy V3:
- *   1. Tracks the live Coinbase BTC price over a short rolling window (5 mins).
- *   2. Calculates price momentum (is BTC trending UP or DOWN?).
- *   3. If trending UP, only looks to buy YES contracts.
- *   4. If trending DOWN, only looks to buy NO contracts.
- *   5. Finds an eligible contract (40%-60% odds) that aligns with the trend.
+ * V3 (Momentum) — tracks BTC over a 5-min rolling window; if trending up, buys YES
+ * near 50/50 on a KXBTC15M contract; if trending down, buys NO. Flat trend = no trade.
  */
 
 const MIN_PROB = 0.30;

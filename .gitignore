@@ -18,3 +18,6 @@ backend/past_trades/
 # OS / editor cruft
 .DS_Store
 *.log
+.claude/settings.local.json
+__pycache__/
+*.py[cod]

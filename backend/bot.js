@@ -18,10 +18,26 @@ const crypto = require('crypto');
 const { kalshiFee } = require('./fees');
 require('dotenv').config();
 
-// V7 (Favorite-Longshot Harvest) is the deployed strategy — the only one that backtests
-// net-positive after fees (held to settlement). Swap the require to run a different module.
-const strategy = require('./strategy7');
-const strategies = [strategy];
+// V7 (Favorite-Longshot Harvest) is the main deployed strategy — the only one that
+// backtested net-positive after fees held to settlement over a full 7-day run.
+// V10 (RSI-3 Sell Signal, gated) runs alongside it: its gated "settle play" backtested
+// +$20.46 on just 6 trades — not enough to trust yet, so it's here to accumulate a real
+// paper track record (mode defaults to 'paper' — see bot-config.json) rather than as a
+// vetted strategy. Both run concurrently; the engine's activeTickers guard (below)
+// stops them from ever buying the same contract twice.
+const strategy1 = require('./strategy');
+const strategy7 = require('./strategy7');
+const strategy10 = require('./strategy10');
+const strategy13 = require('./strategy13');
+const strategy14 = require('./strategy14');
+const strategy15 = require('./strategy15');
+// V13 runs in a separate process: node run-strategy13.js
+// This keeps live trading (V1) isolated from V13's paper-mode learning
+
+// V15 is the active strategy and starts automatically with `npm start`. It restores its
+// saved Q-table, observes BTC, chooses entries/exits, learns from completed trades, and
+// persists its policy without requiring any environment flags or separate commands.
+const strategies = [strategy1];
 
 const pastTradesDir = path.join(__dirname, 'past_trades');
 if (!fs.existsSync(pastTradesDir)) fs.mkdirSync(pastTradesDir);
@@ -33,16 +49,78 @@ const configFile  = path.join(pastTradesDir, 'bot-config.json');
 // In-memory config. The single source of truth is bot-config.json (hot-reloaded on
 // change); these values are only the fallback used if that file is missing/corrupt.
 // mode defaults to 'paper' so live trading is always a deliberate, explicit choice.
+
+
+
 let config = {
-  targetBet: 15.50,
-  takeProfit: 2.00,
-  stopLoss: -6.80,
-  trailingDrop: 0.10,
-  hardExitPct: 0.90, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+  targetBet: 3.50,
+  takeProfit: 1.50,
+  stopLoss: -1.20,
+  hardExitPct: 1, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
   mode: 'paper'
 };
 
+
+
+
+// let config = {
+//   targetBet: 2.20,
+//   takeProfit: 2.30,
+//   stopLoss: -1.00,
+//   hardExitPct: 1.0, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+//   mode: 'paper'
+// };
+
+
+// let config = {
+//   targetBet: 8.50,
+//   takeProfit: 5.50,
+//   stopLoss: -4.0,
+//   hardExitPct: 1.0, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+//   mode: 'paper'
+// };
+
+
+
+// let config = {
+//   targetBet: 3.50,
+//   takeProfit: 1.50,
+//   stopLoss: -1.80,
+//   hardExitPct: 1.0, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+//   mode: 'paper'
+// };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// let config = {
+//   targetBet: 8.50,
+//   takeProfit: 5.50,
+//   stopLoss: -4.80,
+//   hardExitPct: 1.0, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
+//   mode: 'paper'
+// };
+
+
 const ENTRY_COOLDOWN_MS = 3000;  // Pause new entries this long after a failed order.
+const NEAR_STRIKE_USD   = 25;    // Suppress stop-loss while BTC is within this $ of the strike.
 
 // State persisted across restarts. We now track state independently per strategy.
 let state = {
@@ -55,6 +133,9 @@ strategies.forEach(s => {
 let lastTickAt = 0;          // when tick() last ran — drives the dashboard's "live" indicator
 let entryCooldowns = {};     // suppress entries until this timestamp after an order error (per strategy)
 let reconcileDone = false;   // have we adopted any pre-existing LIVE position yet? (once per live session)
+let lastMarkets = [];        // most recent market list from tick() — reused by manualClosePosition,
+                              // which runs off an HTTP request, not a poll cycle, so it has no
+                              // markets of its own to look up the live bid from.
 
 // ─── Persistence ────────────────────────────────────────────────────────────
 
@@ -141,7 +222,7 @@ function loadConfig() {
       }
     };
     setNum('targetBet'); setNum('takeProfit'); setNum('stopLoss');
-    setNum('trailingDrop'); setNum('hardExitPct');
+    setNum('hardExitPct');
     if (parsed.mode !== undefined) {
       const m = parsed.mode === 'live' ? 'live' : 'paper';
       if (config.mode !== m) { config.mode = m; updated = true; }
@@ -154,6 +235,67 @@ function loadConfig() {
     console.error('\n[ENGINE] ⚠️ Config load error (keeping current values):', err.message, '\n');
   }
   return config;
+}
+
+// ─── Auto-sync bot.js's hardcoded config into bot-config.json ─────────────────────
+// Editing the `config` literal above only ever took effect the very first time
+// bot-config.json didn't exist yet — after that the JSON file always won, silently.
+// Instead of just documenting that, push any edited numeric value from bot.js's source
+// straight into bot-config.json automatically, so editing bot.js actually works. This
+// runs in two places: (1) once at startup in init(), covering edits made while the bot
+// was stopped, and (2) via fs.watch while running, covering live edits. Net effect:
+// `npm start` always runs with the numbers currently written in bot.js.
+// 'mode' is deliberately excluded — bot.js always defaults to 'paper' for
+// safety, and an unrelated bot.js edit should never silently flip a live session back to
+// paper (or vice versa); only the dashboard/setMode() should ever change mode.
+// NOTE: this only syncs these four numbers — it does NOT hot-reload the rest of bot.js
+// (strategy wiring, logic changes, etc. still need a real process restart).
+const AUTO_SYNC_KEYS = ['targetBet', 'takeProfit', 'stopLoss', 'hardExitPct'];
+
+function extractConfigLiteral(source) {
+  // Anchor to line start (m flag) so commented-out `// let config = {` blocks
+  // higher up in the file can never be picked instead of the active literal.
+  const match = source.match(/^let\s+config\s*=\s*\{([\s\S]*?)\};/m);
+  if (!match) return null;
+  const body = match[1];
+  const extracted = {};
+  for (const key of AUTO_SYNC_KEYS) {
+    const kMatch = body.match(new RegExp(`\\b${key}\\s*:\\s*(-?[0-9.]+)`));
+    if (kMatch) extracted[key] = Number(kMatch[1]);
+  }
+  return extracted;
+}
+
+function syncHardcodedConfigToFile() {
+  let source;
+  try { source = fs.readFileSync(__filename, 'utf8'); } catch (_) { return; }
+
+  const extracted = extractConfigLiteral(source);
+  if (!extracted) return; // bot.js mid-edit / unparseable right now — try again next change
+
+  let changed = false;
+  for (const key of AUTO_SYNC_KEYS) {
+    if (extracted[key] !== undefined && Number.isFinite(extracted[key]) && config[key] !== extracted[key]) {
+      config[key] = extracted[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeConfig();
+    console.log(`[ENGINE] 🔄 Auto-synced bot.js edit → bot-config.json: Bet=$${config.targetBet.toFixed(2)} | TP=+$${config.takeProfit.toFixed(2)} | SL=-$${Math.abs(config.stopLoss).toFixed(2)} | HardExit=${config.hardExitPct}`);
+  }
+}
+
+let syncDebounceTimer = null;
+try {
+  fs.watch(__filename, (eventType) => {
+    if (eventType !== 'change') return;
+    // Editors/save-tools often fire several change events per save — debounce to one sync.
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(syncHardcodedConfigToFile, 300);
+  });
+} catch (err) {
+  console.warn('[ENGINE] Could not watch bot.js for config auto-sync:', err.message);
 }
 
 function getMode() {
@@ -282,25 +424,36 @@ async function kalshiAuthFetch(method, requestPath, body = null) {
   return resp.json();
 }
 
+// Kalshi's V2 order API dropped the yes/no + buy/sell split in favor of a single
+// YES-leg book: side='bid' buys YES, side='ask' sells YES. Selling YES at price P is
+// economically identical to buying NO at (1-P), and buying YES at P is identical to
+// selling NO at (1-P) — so any (side, action) pair maps onto a (bookSide, yesPrice) pair.
+function toV2Order(side, action, priceDollars) {
+  const isYes = side.toLowerCase() === 'yes';
+  const bookSide = (isYes === (action === 'buy')) ? 'bid' : 'ask';
+  const yesPrice = isYes ? priceDollars : (1 - priceDollars);
+  return { bookSide, yesPrice };
+}
+
 async function placeOrder(ticker, side, quantity, priceDollars) {
   if (!TRADING_ENABLED || getMode() === 'paper') {
     log(`[PAPER] Would BUY ${quantity}x ${ticker} ${side.toUpperCase()} @ $${priceDollars}`);
-    return { order: { order_id: 'paper-' + Date.now(), status: 'paper' } };
+    return { order_id: 'paper-' + Date.now(), status: 'paper' };
   }
 
-  const priceCents = Math.round(priceDollars * 100);
+  const { bookSide, yesPrice } = toV2Order(side, 'buy', priceDollars);
   const body = {
     ticker,
     client_order_id: `bot-${Date.now()}`,
-    side: side.toLowerCase(),
-    action: 'buy',
-    count: quantity,
-    type: 'limit',
-    [side.toLowerCase() === 'yes' ? 'yes_price' : 'no_price']: priceCents
+    side: bookSide,
+    count: quantity.toFixed(2),
+    price: yesPrice.toFixed(4),
+    time_in_force: 'immediate_or_cancel', // fill what's available now, cancel the rest
+    self_trade_prevention_type: 'taker_at_cross'
   };
 
   try {
-    return await kalshiAuthFetch('POST', '/portfolio/orders', body);
+    return await kalshiAuthFetch('POST', '/portfolio/events/orders', body);
   } catch (err) {
     log(`ERROR placing buy order: ${err.message}`);
     throw err;
@@ -310,22 +463,22 @@ async function placeOrder(ticker, side, quantity, priceDollars) {
 async function sellPosition(ticker, side, quantity, bidDollars) {
   if (!TRADING_ENABLED || getMode() === 'paper') {
     log(`[PAPER] Would SELL ${quantity}x ${ticker} ${side.toUpperCase()} @ $${bidDollars}`);
-    return { order: { order_id: 'paper-' + Date.now(), status: 'paper' } };
+    return { order_id: 'paper-' + Date.now(), status: 'paper' };
   }
 
-  const priceCents = Math.round(bidDollars * 100);
+  const { bookSide, yesPrice } = toV2Order(side, 'sell', bidDollars);
   const body = {
     ticker,
     client_order_id: `bot-sell-${Date.now()}`,
-    side: side.toLowerCase(),
-    action: 'sell',
-    count: quantity,
-    type: 'limit',
-    [side.toLowerCase() === 'yes' ? 'yes_price' : 'no_price']: priceCents
+    side: bookSide,
+    count: quantity.toFixed(2),
+    price: yesPrice.toFixed(4),
+    time_in_force: 'immediate_or_cancel',
+    self_trade_prevention_type: 'taker_at_cross'
   };
 
   try {
-    return await kalshiAuthFetch('POST', '/portfolio/orders', body);
+    return await kalshiAuthFetch('POST', '/portfolio/events/orders', body);
   } catch (err) {
     log(`ERROR placing sell order: ${err.message}`);
     throw err;
@@ -342,6 +495,23 @@ async function getBalance() {
   }
 }
 
+// ─── Cached balance (keeps the network round trip off the entry critical path) ──────
+// A live GET /portfolio/balance measured ~50ms RTT — sitting that in front of every
+// entry doubled the latency between signal and order. Balance only moves on fills, so
+// we track it locally (adjusted synchronously the instant we know a fill's cost/proceeds)
+// and resync from Kalshi in the background on a timer to correct for fee drift or any
+// other account activity. The entry path below reads this cache directly — no await.
+let cachedBalanceDollars = null;
+let lastBalanceRefreshAt = 0;
+const BALANCE_REFRESH_MS = 60000;
+
+async function refreshBalance() {
+  const bal = await getBalance();
+  if (bal) cachedBalanceDollars = bal.balance / 100;
+  lastBalanceRefreshAt = Date.now();
+  return cachedBalanceDollars;
+}
+
 // ─── Order fill confirmation ──────────────────────────────────────────────────
 // A limit order can rest unfilled (the touch moved, or there wasn't enough size) —
 // so we must NOT assume an order filled just because Kalshi accepted it. These
@@ -353,7 +523,7 @@ const FILL_POLL_MS    = 300;  // re-check holdings this often
 
 async function cancelOrder(orderId) {
   try {
-    await kalshiAuthFetch('DELETE', `/portfolio/orders/${orderId}`);
+    await kalshiAuthFetch('DELETE', `/portfolio/events/orders/${orderId}`);
   } catch (err) {
     log(`cancelOrder error: ${err.message}`);
   }
@@ -396,7 +566,7 @@ async function enterConfirmed(ticker, side, count, askDollars) {
   }
   const before = (await heldContracts(ticker)) ?? 0;
   const result = await placeOrder(ticker, side, count, askDollars);
-  const orderId = result?.order?.order_id;
+  const orderId = result?.order_id;
 
   const after = await awaitPosition(ticker, h => h > before);
   if (after == null) { // couldn't read positions — don't assume; cancel to be safe
@@ -411,34 +581,59 @@ async function enterConfirmed(ticker, side, count, askDollars) {
 
 // Live EXIT: sell with an aggressive 1¢ limit so it CROSSES the book and fills at the
 // best available bid (a passive limit at a stale bid is what rests unfilled). Confirms
-// via the position dropping. Returns contracts STILL held (0 = fully exited).
+// via the position dropping. Returns contracts STILL held (0 = fully exited), or null if
+// we can't confirm real holdings and therefore refuse to place any order at all.
+//
+// SAFETY: always reads actual held contracts BEFORE selling. Selling a side you don't
+// hold doesn't error on Kalshi — it OPENS THE OPPOSITE POSITION instead. If you close a
+// position manually (e.g. from the phone app) between ticks, the bot's local state is
+// stale; without this check it would try to "exit" a position that's already gone and
+// accidentally open a brand new one. This must never place an order it can't confirm is
+// backed by a real holding.
 async function exitConfirmed(ticker, side, count, displayBid) {
   if (!TRADING_ENABLED || getMode() === 'paper') {
     await sellPosition(ticker, side, count, displayBid); // paper: log at the real bid
     return 0;
   }
-  const result = await sellPosition(ticker, side, count, 0.01); // cross the book
-  const orderId = result?.order?.order_id;
+
+  const before = await heldContracts(ticker);
+  if (before === 0) return 0;      // already flat (e.g. closed manually) — nothing to do
+  if (before == null) return null; // can't confirm holdings — refuse to guess, caller stops
+
+  const sellCount = Math.min(count, before);
+  const result = await sellPosition(ticker, side, sellCount, 0.01); // cross the book
+  const orderId = result?.order_id;
 
   const after = await awaitPosition(ticker, h => h <= 0.0001);
-  if (after == null) return count; // unknown — assume still held, retry next tick
+  if (after == null) return sellCount; // fill unconfirmed — caller stops, no retry
   const remaining = Math.max(0, Math.round(after));
   if (remaining > 0 && orderId) await cancelOrder(orderId);
   return remaining;
 }
 
 // Close (or partially close) the current position with a CONFIRMED exit. Books realized
-// PnL for whatever actually filled; keeps any unfilled remainder open to retry next tick
-// so the bot never reports flat while the real position is still open.
+// PnL for whatever actually filled. Exactly ONE attempt — no retries. If it can't fully
+// close, it logs "CANNOT CLOSE" and marks the position `closeFailed` so the tick loop
+// never tries again automatically; it needs a human to look at it. (A prior version kept
+// retrying every tick, which under a stale/mismatched local position size compounded into
+// repeatedly opening new positions instead of closing — never doing that again.)
 async function closeCurrent(strategyName, result, bid) {
   const stratState = state.strategies[strategyName];
+  const strategy = strategies.find(s => s.name === strategyName);
   const pos = stratState.position;
   let remaining;
   try {
     remaining = await exitConfirmed(pos.ticker, pos.side, pos.numContracts, bid);
   } catch (err) {
-    log(`SELL ERROR at ${result}: ${err.message}`);
-    return; // keep the position; retry next tick
+    log(`❌ CANNOT CLOSE POSITION [${strategyName}]: ${pos.subtitle} — ${err.message}. Not retrying — needs manual review.`);
+    pos.closeFailed = true;
+    return;
+  }
+
+  if (remaining === null) {
+    log(`❌ CANNOT CLOSE POSITION [${strategyName}]: ${pos.subtitle} — could not confirm real holdings, refused to guess. Not retrying — needs manual review.`);
+    pos.closeFailed = true;
+    return;
   }
 
   const exited = pos.numContracts - remaining;
@@ -449,26 +644,65 @@ async function closeCurrent(strategyName, result, bid) {
     const fees = kalshiFee(pos.entryPrice, exited) + kalshiFee(bid, exited);
     const pnl = exited * (bid - pos.entryPrice) - fees;
     stratState.totalProfit += pnl;
-    const label = result === 'TP' ? 'TAKE PROFIT' : 'STOP LOSS';
+    const label = result === 'TP' ? 'TAKE PROFIT'
+      : result === 'SL' ? 'STOP LOSS'
+      : result === 'RL_EXIT' ? 'LEARNED EXIT'
+      : 'MANUAL CLOSE';
     logTrade(`[${strategyName}] ${label} | ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | x${exited} | ${pos.subtitle} | ${pos.side.toUpperCase()}`);
-    stratState.tradeHistory.push({ ...pos, numContracts: exited, exitBid: bid, pnl, result, closedAt: new Date().toISOString() });
+    const closedTrade = { ...pos, numContracts: exited, exitBid: bid, pnl, result, closedAt: new Date().toISOString() };
+    stratState.tradeHistory.push(closedTrade);
+    if (typeof strategy?.onTradeClosed === 'function') strategy.onTradeClosed(closedTrade);
+
+    // Optimistic local credit (proceeds minus fees) — same reasoning as the entry debit.
+    if (TRADING_ENABLED && getMode() === 'live' && cachedBalanceDollars != null) {
+      cachedBalanceDollars += exited * bid - fees;
+    }
   }
 
   if (remaining > 0) {
-    log(`EXIT INCOMPLETE [${strategyName}]: ${remaining}/${pos.numContracts} of ${pos.subtitle} still held — retrying next tick`);
-    pos.peakPnl      = pos.peakPnl * (remaining / pos.numContracts); // scale to the smaller lot
+    log(`❌ CANNOT CLOSE POSITION [${strategyName}]: ${remaining}/${pos.numContracts} of ${pos.subtitle} still held. Not retrying — needs manual review.`);
     pos.cost         = remaining * pos.entryPrice;
     pos.numContracts = remaining;
+    pos.closeFailed  = true;
   } else {
     stratState.position = null;
-    
-    // Prevent death loops: force a cooldown after exiting before re-entering
-    if (result === 'SL') {
-      entryCooldowns[strategyName] = Date.now() + 30000; // 30s timeout after Stop Loss
-    } else if (result === 'TP') {
-      entryCooldowns[strategyName] = Date.now() + 5000;  // 5s timeout after Take Profit
-    }
+    // Prevent rapid close/re-entry loops. Strategy-level one-ticker guards are the main
+    // protection; this engine cooldown also protects every future strategy implementation.
+    entryCooldowns[strategyName] = Date.now() + (result === 'TP' ? 5000 : 30000);
   }
+}
+
+// User-initiated exit from the dashboard's Close Position button. Reuses the same
+// confirmed-exit path as TP/SL (closeCurrent/exitConfirmed) — exactly one attempt, no
+// retries — so a manual close can never leave the bot's local state out of sync with
+// what Kalshi actually filled. Overrides holdToSettle on purpose: that flag only stops
+// the *automatic* TP/SL logic in tick() from exiting early, it was never meant to block
+// a human who explicitly asked to get out now.
+async function manualClosePosition(ticker) {
+  if (!ticker) return { ok: false, error: 'No ticker provided.' };
+
+  const strategyName = Object.keys(state.strategies)
+    .find(name => state.strategies[name].position?.ticker === ticker);
+  if (!strategyName) return { ok: false, error: 'No open position with that ticker.' };
+
+  const pos = state.strategies[strategyName].position;
+  if (pos.closeFailed) return { ok: false, error: 'Previous close attempt on this position needs manual review before retrying — check the logs.' };
+
+  const myMarket = lastMarkets.find(m => m.ticker === ticker);
+  if (!myMarket) return { ok: false, error: 'Market not currently listed (likely settling right now) — wait a moment and retry.' };
+
+  const bid = parseFloat(pos.side === 'yes' ? (myMarket.yes_bid_dollars || 0) : (myMarket.no_bid_dollars || 0));
+
+  await closeCurrent(strategyName, 'MANUAL', bid);
+  saveState();
+
+  const stillOpen = state.strategies[strategyName].position;
+  if (stillOpen) {
+    return stillOpen.closeFailed
+      ? { ok: false, error: 'Could not confirm the close — needs manual review, see server logs.' }
+      : { ok: false, error: 'Only partially closed — remaining contracts still open.' };
+  }
+  return { ok: true };
 }
 
 // ─── Startup position reconciliation ───────────────────────────────────────────
@@ -531,7 +765,6 @@ async function reconcilePositions(markets) {
         cost:         qty * entryPrice,
         currentBid:   entryPrice,
         pnl:          0,
-        peakPnl:      0,
         enteredAt:    new Date().toISOString(),
         strategy:     freeStrat.name,
         reconciled:   true
@@ -544,18 +777,46 @@ async function reconcilePositions(markets) {
   }
 }
 
+// The live Kalshi API carries the strike as a plain numeric `floor_strike` field; recorded/
+// legacy data may only have it in `subtitle` ("Target Price: $62,059.76") — same fallback
+// used in strategy5.js/strategy10.js.
+function strikeOf(market) {
+  if (Number.isFinite(market?.floor_strike)) return market.floor_strike;
+  const sub = String(market?.subtitle || '');
+  const sm = sub.match(/([0-9][0-9,]*(?:\.[0-9]+)?)/);
+  return sm ? parseFloat(sm[1].replace(/,/g, '')) : null;
+}
+
+// Public, unauthenticated — the real settlement result for a market that's rolled off
+// the polled event list. Used by tick()'s expiry branch instead of ever guessing which
+// side won. Returns 'yes' | 'no' | null (not finalized yet / unreachable).
+async function fetchMarketResult(ticker) {
+  try {
+    const resp = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.market?.result || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ─── Trading tick ─────────────────────────────────────────────────────────────
 // Called once per poll cycle by index.js with the already-fetched market list and
 // BTC price. Performs entry or position management. Does NOT fetch or schedule.
 
 async function tick(markets, btcPrice) {
   lastTickAt = Date.now();
+  lastMarkets = markets || [];
   const currentConfig = loadConfig();
 
   // Feed the centralized BTC price to strategies that rely on it
   strategies.forEach(strategy => {
     if (typeof strategy.recordPrice === 'function' && Number.isFinite(btcPrice)) {
       strategy.recordPrice(btcPrice);
+    }
+    if (typeof strategy.observeMarkets === 'function') {
+      strategy.observeMarkets(markets || [], btcPrice);
     }
   });
 
@@ -599,10 +860,13 @@ async function tick(markets, btcPrice) {
       const { market, ask, side } = entry;
 
       // ── Size to what the balance can actually afford ──────────────────────────
+      // Reads the local cache — no network call here, so this doesn't sit in front of
+      // the order like a fresh getBalance() would. Refreshed on a timer, in the
+      // background, so it can't block this tick.
       let budget = currentConfig.targetBet;
       if (TRADING_ENABLED && getMode() === 'live') {
-        const bal = await getBalance();
-        const availDollars = bal ? (bal.balance / 100) : 0;
+        if (Date.now() - lastBalanceRefreshAt > BALANCE_REFRESH_MS) refreshBalance().catch(() => {});
+        const availDollars = cachedBalanceDollars ?? 0;
         budget = Math.min(currentConfig.targetBet, availDollars * 0.95 - 0.10); // 5% + 10¢ fee headroom
       }
 
@@ -628,6 +892,12 @@ async function tick(markets, btcPrice) {
         continue;
       }
 
+      // Optimistic local debit (fees excluded) so the NEXT entry's sizing reflects this
+      // fill instantly; the timer-based refreshBalance() reconciles the exact figure.
+      if (TRADING_ENABLED && getMode() === 'live' && cachedBalanceDollars != null) {
+        cachedBalanceDollars -= filled * ask;
+      }
+
       stratState.position = {
         ticker:       market.ticker,
         subtitle:     market.subtitle || market.ticker,
@@ -637,10 +907,15 @@ async function tick(markets, btcPrice) {
         cost:         filled * ask,
         currentBid:   ask,
         pnl:          0,
-        peakPnl:      0,
         enteredAt:    new Date().toISOString(),
-        strategy:     strategy.name
+        strategy:     strategy.name,
+        // Per-position exit overrides (optional; e.g. V10 scalp TP vs hold-to-settlement)
+        takeProfit:   entry.takeProfit,
+        holdToSettle: !!entry.holdToSettle
       };
+      if (typeof strategy.onPositionOpened === 'function') {
+        strategy.onPositionOpened(stratState.position, market);
+      }
 
       const tag = getMode() === 'live' ? 'LIVE' : 'PAPER';
       const partial = filled < numContracts ? ` of ${numContracts}` : '';
@@ -653,16 +928,36 @@ async function tick(markets, btcPrice) {
       const myMarket = markets.find(m => m.ticker === stratState.position.ticker);
 
       if (!myMarket) {
-        // Market disappeared (settlement between cycles) — treat as expiry. A contract
-        // held to settlement pays $1/$0 with NO exit fee, but the entry fee was still paid.
-        const bidFallback = stratState.position.side === 'yes' ? 1.00 : 0.00;
-        const exitValue = stratState.position.numContracts * bidFallback;
+        // Market rolled off the polled event — getDynamicTicker() advances to the NEXT
+        // window the instant the current one's boundary passes, so this fires immediately
+        // at expiry, before Kalshi has necessarily finalized a result. It does NOT tell us
+        // which side won. (A previous version assumed "yes always wins, no always loses"
+        // here — that fabricated a full win on every yes-side LOSS and vice versa, silently
+        // corrupting totalProfit/tradeHistory/balance. Never guess a settlement outcome.)
+        let result = null;
+        try { result = await fetchMarketResult(stratState.position.ticker); } catch (_) {}
+
+        if (result !== 'yes' && result !== 'no') {
+          trackingLogs.push(`[${strategy.name.split(' ')[0]}] awaiting settlement confirmation…`);
+          continue; // not confirmed yet — re-check next tick, don't touch the position
+        }
+
+        const won = result === stratState.position.side;
+        const exitValue = won ? stratState.position.numContracts : 0;
         const entryFee = kalshiFee(stratState.position.entryPrice, stratState.position.numContracts);
         const pnl = exitValue - stratState.position.cost - entryFee;
 
-        logTrade(`MARKET SETTLED | ${stratState.position.subtitle} | PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | Strategy: ${strategy.name}`);
+        logTrade(`SETTLED | ${stratState.position.subtitle} | ${stratState.position.side.toUpperCase()} | ${won ? 'WON' : 'LOST'} | PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} | Strategy: ${strategy.name}`);
         stratState.totalProfit += pnl;
-        stratState.tradeHistory.push({ ...stratState.position, exitBid: bidFallback, pnl, result: 'SETTLED', closedAt: new Date().toISOString() });
+        const closedTrade = { ...stratState.position, exitBid: won ? 1 : 0, pnl, result: 'SETTLED', closedAt: new Date().toISOString() };
+        stratState.tradeHistory.push(closedTrade);
+        if (typeof strategy.onTradeClosed === 'function') strategy.onTradeClosed(closedTrade);
+
+        // Optimistic local credit for the settlement payout (see cachedBalanceDollars above).
+        if (TRADING_ENABLED && getMode() === 'live' && cachedBalanceDollars != null) {
+          cachedBalanceDollars += exitValue;
+        }
+
         stratState.position = null;
         continue;
       }
@@ -673,23 +968,66 @@ async function tick(markets, btcPrice) {
           : (myMarket.no_bid_dollars  || 0)
       );
 
-      const currentValue = stratState.position.numContracts * bid;
-      const pnl          = currentValue - stratState.position.cost;
+      // Two PnL figures, deliberately different:
+      //  - grossPnl: plain mark-to-market (current bid × contracts − cost), matching what
+      //    Kalshi's own app shows for an open position. This is what we DISPLAY.
+      //  - pnl: net of the entry fee (already paid) and the exit fee you'd pay if you sold
+      //    RIGHT NOW — "what I'd actually book if I closed this instant." This is what
+      //    DECIDES exits below, so a configured TP/SL means real achievable dollars, not
+      //    gross price movement. It will always run a bit behind grossPnl while open — that
+      //    gap is exactly the fees, not a bug (see the mismatch it was built to eliminate:
+      //    closeCurrent()'s actual booked amount is net, so the trigger has to be too).
+      const entryFee      = kalshiFee(stratState.position.entryPrice, stratState.position.numContracts);
+      const exitFeeIfSold = kalshiFee(bid, stratState.position.numContracts);
+      const currentValue  = stratState.position.numContracts * bid;
+      const grossPnl       = currentValue - stratState.position.cost;
+      const pnl           = grossPnl - entryFee - exitFeeIfSold;
 
       stratState.position.currentBid = bid;
-      stratState.position.pnl        = pnl;
-      stratState.position.peakPnl    = Math.max(stratState.position.peakPnl || 0, pnl);
+      stratState.position.pnl        = grossPnl;
 
-      const peakStr = stratState.position.peakPnl >= currentConfig.takeProfit ? ` | Peak: +$${stratState.position.peakPnl.toFixed(2)}` : '';
-      trackingLogs.push(`[${strategy.name.split(' ')[0]}] PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}${peakStr}`);
+      trackingLogs.push(`[${strategy.name.split(' ')[0]}] PnL: ${grossPnl >= 0 ? '+' : ''}$${grossPnl.toFixed(2)}`);
 
-      const maxProfit = (1.00 - stratState.position.entryPrice) * stratState.position.numContracts;
+      // Net max profit if held all the way to settlement (that exit is fee-free — only the
+      // entry fee was ever paid on this path), so hardExitPct is a % of a real number.
+      const maxProfit = (1.00 - stratState.position.entryPrice) * stratState.position.numContracts - entryFee;
 
-      if (pnl >= currentConfig.hardExitPct * maxProfit) {
+      // Per-position overrides: holdToSettle skips all profit-taking (settlement pays
+      // the full $1 with no exit fee; stop-loss stays on as a disaster brake), and a
+      // position-level takeProfit (e.g. V10's $1 scalp) beats the global config value.
+      const tpTarget = stratState.position.takeProfit ?? currentConfig.takeProfit;
+      const holdToSettle = !!stratState.position.holdToSettle;
+
+      // Don't stop out while BTC is still within $NEAR_STRIKE_USD of the strike — the
+      // outcome is still genuinely undecided this close, so a stop-loss here is cutting a
+      // coin-flip rather than a real loser; give it room to resolve instead.
+      const strike = strikeOf(myMarket);
+      const nearStrike = Number.isFinite(strike) && Number.isFinite(btcPrice)
+        && Math.abs(btcPrice - strike) <= NEAR_STRIKE_USD;
+
+      const learnedExit = typeof strategy.chooseExit === 'function'
+        ? strategy.chooseExit({
+            position: stratState.position,
+            market: myMarket,
+            btcPrice,
+            bid,
+            grossPnl,
+            netPnl: pnl,
+            maxProfit,
+          })
+        : null;
+
+      if (stratState.position.closeFailed) {
+        // A previous close attempt couldn't confirm it fully exited — do NOT retry
+        // automatically (see closeCurrent). Just keep surfacing it until a human clears it.
+        trackingLogs.push(`[${strategy.name.split(' ')[0]}] ❌ CANNOT CLOSE — manual review needed`);
+      } else if (learnedExit?.exit) {
+        await closeCurrent(strategy.name, learnedExit.result || 'RL_EXIT', bid);
+      } else if (!holdToSettle && pnl >= currentConfig.hardExitPct * maxProfit) {
         await closeCurrent(strategy.name, 'TP', bid); // Hard exit: lock it in if we capture the target % of maximum possible profit
-      } else if (stratState.position.peakPnl >= currentConfig.takeProfit && (stratState.position.peakPnl - pnl >= currentConfig.trailingDrop)) {
+      } else if (!holdToSettle && pnl >= tpTarget) {
         await closeCurrent(strategy.name, 'TP', bid);
-      } else if (pnl <= currentConfig.stopLoss) {
+      } else if (pnl <= currentConfig.stopLoss && !nearStrike) {
         await closeCurrent(strategy.name, 'SL', bid);
       }
     }
@@ -709,18 +1047,28 @@ async function tick(markets, btcPrice) {
 async function init() {
   loadState();
   console.log(`[ENGINE] Starting with ${strategies.length} ${strategies.length === 1 ? 'strategy' : 'parallel strategies'}: ${strategies.map(s => s.name).join(', ')}`);
+
+  // Load bot-config.json first (it carries mode and any dashboard-made changes), THEN
+  // sync bot.js's config literal over it. fs.watch only catches edits made while the
+  // process is running — this startup pass covers edits made while the bot was stopped,
+  // so `npm start` always runs with the numbers currently written in bot.js. Mode is
+  // never synced (see AUTO_SYNC_KEYS) so a live session stays live across restarts.
+  loadConfig();
+  syncHardcodedConfigToFile();
+
+  const currentConfig = config;
   console.log(`[ENGINE] Initial mode: ${getMode().toUpperCase()} (toggle from the dashboard)`);
-  const currentConfig = loadConfig();
   console.log(`[ENGINE] Active Config: Bet=$${currentConfig.targetBet.toFixed(2)} | TP=+$${currentConfig.takeProfit.toFixed(2)} | SL=-$${Math.abs(currentConfig.stopLoss).toFixed(2)}`);
+
   strategies.forEach(s => {
     const p = state.strategies[s.name].totalProfit;
     console.log(`  - ${s.name} Lifetime profit: ${p >= 0 ? '+' : ''}$${p.toFixed(2)}`);
   });
 
   if (TRADING_ENABLED) {
-    const balance = await getBalance();
-    if (balance) {
-      console.log(`[ENGINE] ✅ Connected to Kalshi. Account balance: $${(balance.balance / 100).toFixed(2)}`);
+    await refreshBalance(); // seeds cachedBalanceDollars so the first entry never blocks on a fetch
+    if (cachedBalanceDollars != null) {
+      console.log(`[ENGINE] ✅ Connected to Kalshi. Account balance: $${cachedBalanceDollars.toFixed(2)}`);
     } else {
       console.log('[ENGINE] ⚠️  Could not fetch balance — check your API key & private key');
     }
@@ -733,6 +1081,7 @@ module.exports = {
   getMode,
   setMode,
   getDashboardState,
+  manualClosePosition,
   strategyName: 'Parallel Engine (4 Strategies)'
 };
 

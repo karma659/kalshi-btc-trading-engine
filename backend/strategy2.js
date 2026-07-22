@@ -1,22 +1,7 @@
 /**
- * Trading Strategy Module - V2 (Favorite)
- *
- * Decides which contract to enter and which side (YES/NO) based on configurable rules.
- * Returns { market, side, ask } or null if no good entry found.
- *
- * Strategy V2 — buy the favorite:
- *   1. Consider only sides the market prices as a *favorite*: ask in the 50–60% band
- *      (implied probability > 50%, but not so steep that a +12¢ TP is out of reach).
- *   2. For each market, take the stronger favorite side (higher ask).
- *   3. Across markets, pick the STRONGEST favorite (highest ask), betting a side the
- *      market already favors keeps drifting toward resolution.
- *   4. Tie-break by lower ask (more contracts for the same budget).
- *
- * NOTE: this replaces the old "Farthest/Closest" version, whose per-market sort
- * (farthest from 50%) and cross-market sort (closest to 50%) contradicted each other.
- * It also avoids the trap of ranking by |ask−0.50|, which can't tell a 42% underdog
- * from a 58% favorite. Here "favorite" means ask > 0.50, full stop. This is the
- * directional-favorite counterpart to V1's coin-flip volatility play.
+ * V2 (Favorite) — buys the strongest favorite (ask 0.65–0.78) across all open KXBTC15M
+ * markets, betting the side the market already favors keeps drifting toward resolution.
+ * No time-to-expiry gate — can enter at any point in the 15-min contract.
  */
 
 const MIN_PROB = 0.65; // favorites only — the side the market prices above 50%

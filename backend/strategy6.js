@@ -1,13 +1,6 @@
 /**
- * Trading Strategy Module - V6 (High-Band 40-60)
- *
- * Decides which contract to enter and which side (YES/NO) based on configurable rules.
- *
- * Strategy V6:
- *   1. Filter contracts where YES or NO ask is in the 40–60% probability range.
- *   2. For each candidate, pick the side with the highest probability (most expensive).
- *   3. Among all candidates, pick the one with the highest probability overall.
- *   4. This naturally favors contracts closer to 60% (the "greater" ones).
+ * V6 (High-Band 40-60) — among near-coinflip KXBTC15M contracts (ask 40-60%), buys the
+ * most expensive side (closest to 60%).
  */
 
 const MIN_PROB = 0.40;

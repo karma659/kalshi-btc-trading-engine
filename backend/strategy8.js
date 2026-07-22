@@ -1,22 +1,7 @@
 /**
- * Trading Strategy Module - V8 (Momentum Capture, small-profit exit)
- *
- * Built on request: ride BTC momentum and scalp a small, quick profit.
- *   1. Track BTC over a short rolling window; read the slope (recent half vs older half).
- *   2. Trend UP  → buy YES;  trend DOWN → buy NO.
- *   3. Pick the contract CLOSEST to 50% in the trend direction — highest sensitivity, so a
- *      small BTC move produces the biggest contract-price move (fastest path to a small TP).
- *   4. Exit is handled by the engine's TP/SL (set in bot-config.json).
- *
- * ⚠️ BACKTEST RESULT: LOSES ~$1.50 PER TRADE, every exit config. Over ~7 days it ran
- * ~1,300–1,600 trades and netted −$2,000 to −$2,455, with ~$1,400–1,700 of that being pure
- * FEES. It is even negative BEFORE fees (no momentum edge). Do NOT deploy. Kept as a
- * documented negative result. The reason, in one line:
- *
- * ⚠️ A scalp BUYS at the ask and SELLS at the bid, so it pays the full bid-ask spread + a fee
- * on BOTH legs — ≈5.8¢/contract round-trip on these ~50% books. A "small profit" target
- * smaller than that loses on every round trip regardless of whether the momentum call was
- * right. Same reason V3/V4 (the existing momentum scalpers) backtested net-negative.
+ * V8 (Momentum Capture) — same trend-follow idea as V3, picks the contract closest to
+ * 50/50 for max price sensitivity, and scalps a small TP instead of holding.
+ * Backtested net-negative on both the old hourly and current 15-min data — do not deploy.
  */
 
 const WINDOW_MS = 3 * 60 * 1000;    // 3-min window (testable on 1-min backtest data)

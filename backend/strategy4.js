@@ -1,13 +1,6 @@
 /**
- * Trading Strategy Module - V4 (Fast Momentum Scalp)
- *
- * Strategy V4:
- *   1. Tracks live Coinbase BTC price over a micro rolling window (2 seconds).
- *   2. Calculates fast price momentum (is BTC breaking out right now?).
- *   3. If trending UP (>$5 vs SMA), only looks to buy YES contracts.
- *   4. If trending DOWN (<$5 vs SMA), only looks to buy NO contracts.
- *   5. Targets 45%-80% odds, picking the one closest to 50% to maximize leverage 
- *      so a very small price move yields a fast +$1.00 Take Profit.
+ * V4 (Fast Momentum Scalp) — same idea as V3 but over a 6-second micro-window, for fast
+ * breakouts. Can't be validated against recorded 1-tick/min history — live-only.
  */
 
 const MIN_PROB = 0.30;

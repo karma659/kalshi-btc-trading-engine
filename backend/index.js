@@ -13,34 +13,55 @@ const http = require('http');
 const WebSocket = require('ws');
 
 const engine = require('./bot'); // trading engine module — fed by the poller below
-const { monitorDataQuality } = require('./anomaly-detection');
+const coinbaseWs = require('./coinbase-ws');
+const tradingviewWs = require('./tradingview-ws');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // ─── Tuning ────────────────────────────────────────────────────────────────────
-const BASE_POLL_MS        = 50;     // Kalshi poll cadence (the "once with 50ms")
-const MAX_POLL_MS         = 1000;  // backoff ceiling on errors
+const BASE_POLL_MS        = 100;     // Kalshi poll cadence (the "once with 50ms")
+const MAX_POLL_MS         = 100;  // backoff ceiling on errors
 const COINBASE_THROTTLE_MS = 100;  // Coinbase rate-limits harder; 2/s is plenty for trend + UI
 const BROADCAST_THROTTLE_MS = 250; // WS push cadence to browsers (data still refreshes at 50ms)
 
+// BTC price source switch. 'websocket' (default): real-time Coinbase WS ticker, no
+// polling-interval lag. If the feed hasn't connected yet or has gone stale, we do NOT
+// fall back to REST — REST reads measured ~1s stale, so trading on one unannounced
+// would be worse than not trading. We log an error and keep serving the last known-good
+// price (see resolveBtcPrice) — V7's entries don't depend on btcPrice at all, only
+// strategies with recordPrice() are affected by a stale/frozen reading.
+// 'tradingview': TradingView's CRYPTO:BTCUSD blended feed (see tradingview-ws.js) —
+// tracks Kalshi's actual settlement source (CF Benchmarks' BRTI, itself a multi-exchange
+// composite) more closely than Coinbase's single-exchange print. Uses TradingView's
+// undocumented internal quote-session protocol, not an official API — best-effort, same
+// strict no-REST-fallback contract as 'websocket'.
+// 'rest': force the Coinbase REST poll only. Set via env: BTC_SOURCE=websocket|tradingview|rest.
+const BTC_SOURCE = (process.env.BTC_SOURCE || 'websocket').toLowerCase();
+let lastBtcSourceLogged = null;
+
 /**
- * Generates the Kalshi ticker for the upcoming hour (e.g. 'kxbtcd-23may2306').
+ * Generates the Kalshi event ticker for the upcoming 15-minute window (e.g.
+ * 'kxbtc15m-26jul080830'), quarter-hour aligned (:00/:15/:30/:45 ET). Series is
+ * KXBTC15M — unlike the old hourly KXBTCD, each event has exactly ONE market
+ * (single yes/no on whether BTC is above its trailing-15-min average), not a
+ * ladder of strikes.
  */
 function getDynamicTicker() {
   const now = new Date();
-  now.setMinutes(0, 0, 0, 0);
-  const targetTime = new Date(now.getTime() + 60 * 60 * 1000);
+  const flooredMin = Math.floor(now.getMinutes() / 15) * 15;
+  now.setMinutes(flooredMin, 0, 0);
+  const targetTime = new Date(now.getTime() + 15 * 60 * 1000);
 
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
-    year: '2-digit', month: 'short', day: '2-digit', hour: '2-digit', hour12: false
+    year: '2-digit', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
   }).formatToParts(targetTime);
   const t = Object.fromEntries(parts.map(p => [p.type, p.value]));
 
   const hh = t.hour === '24' ? '00' : t.hour; // JS returns '24' for midnight
-  return `kxbtcd-${t.year}${t.month.toLowerCase()}${t.day}${hh}`;
+  return `kxbtc15m-${t.year}${t.month.toLowerCase()}${t.day}${hh}${t.minute}`;
 }
 
 /**
@@ -58,10 +79,18 @@ async function fetchKalshiApi(ticker) {
 
   const data = await resp.json();
   const event = data.event;
-  const markets = event.markets || [];
+  // KXBTCD (hourly) markets carry a plain `subtitle` (e.g. "$71,750 or above"). KXBTC15M
+  // (15-min) markets don't — only `yes_sub_title` (e.g. "Target Price: $62,224.68"). Normalize
+  // here, once, onto the raw objects so every downstream consumer (this contracts mapping,
+  // and bot.js/_rawMarkets which reads market.subtitle for positions + trade history) gets a
+  // readable name instead of falling back to the raw ticker string.
+  const markets = (event.markets || []).map(m => ({
+    ...m,
+    subtitle: m.subtitle || m.yes_sub_title || m.ticker
+  }));
 
   const contracts = markets.map(m => ({
-    subtitle: m.subtitle || m.ticker,
+    subtitle: m.subtitle,
     yesAsk: parseFloat(m.yes_ask_dollars || 0),
     yesBid: parseFloat(m.yes_bid_dollars || 0),
     noAsk: parseFloat(m.no_ask_dollars || 0),
@@ -139,6 +168,18 @@ app.get('/api/bot-state', (req, res) => {
   res.json(engine.getDashboardState());
 });
 
+// Manual exit, triggered by the dashboard's Close Position button.
+app.post('/api/close-position', async (req, res) => {
+  const ticker = req.body?.ticker;
+  try {
+    const result = await engine.manualClosePosition(ticker);
+    res.json(result);
+  } catch (err) {
+    console.error('close-position error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
@@ -154,47 +195,46 @@ let lastBtc       = null;
 let lastBtcFetchAt = 0;
 let lastBroadcastAt = 0;
 
-// Current minute in America/New_York (handles EDT/EST).
-function currentMinuteET() {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York', minute: '2-digit', hour12: false
-  }).formatToParts(new Date());
-  const m = parts.find(p => p.type === 'minute');
-  return m ? parseInt(m.value, 10) : new Date().getMinutes();
+// Resolves this cycle's BTC price per BTC_SOURCE. 'websocket' mode is strict: if the
+// feed is down/stale we do NOT silently switch to REST (a REST read can be ~1s stale
+// per measurement, so trading on it unannounced would be worse than not trading at
+// all) — we log an error and return null, and the caller keeps serving the last
+// known-good price until the feed recovers. Use BTC_SOURCE=rest to explicitly run on
+// REST instead.
+async function resolveBtcPrice(now, doCoinbase) {
+  if (BTC_SOURCE === 'websocket' || BTC_SOURCE === 'tradingview') {
+    const feed = BTC_SOURCE === 'tradingview' ? tradingviewWs : coinbaseWs;
+    const wsPrice = feed.getPrice();
+    if (wsPrice != null) {
+      if (lastBtcSourceLogged !== BTC_SOURCE) {
+        console.log(`[BTC] using ${BTC_SOURCE} feed`);
+        lastBtcSourceLogged = BTC_SOURCE;
+      }
+      return wsPrice;
+    }
+    if (lastBtcSourceLogged !== 'ws-down') {
+      console.error(`[BTC] ERROR: ${BTC_SOURCE} feed is down/stale — NOT falling back to REST. Serving the last known-good price until it reconnects.`);
+      lastBtcSourceLogged = 'ws-down';
+    }
+    return null;
+  }
+  return doCoinbase ? fetchCoinbaseBtcPrice() : null;
 }
 
 async function runPoller() {
-  // Hourly shutdown: exit in the last minute of every hour (XX:59 ET). run.sh relaunches.
-  if (currentMinuteET() === 59) {
-    console.log(`[${new Date().toISOString()}] Last minute of the hour — shutting down. run.sh will relaunch.`);
-    process.exit(0);
-  }
-
   try {
     const ticker = getDynamicTicker();
     const now = Date.now();
     const doCoinbase = now - lastBtcFetchAt >= COINBASE_THROTTLE_MS;
 
-    // Kalshi every cycle, Coinbase throttled — both in parallel.
+    // Kalshi every cycle, BTC price (websocket-first, REST fallback/mode) in parallel.
     const [kalshiData, btc] = await Promise.all([
       fetchKalshiApi(ticker),
-      doCoinbase ? fetchCoinbaseBtcPrice() : Promise.resolve(null)
+      resolveBtcPrice(now, doCoinbase)
     ]);
 
-    const prevBtc = lastBtc;                       // last known-good price BEFORE this cycle
     if (btc != null) { lastBtc = btc; lastBtcFetchAt = now; }
-    const currentBtc = lastBtc;                    // last known-good price AFTER this cycle
-
-    // Run data quality anomaly checks before feeding data to the trading engine.
-    // freshBtc (this cycle's raw fetch) is intentionally null on throttled cycles — drift
-    // uses it so it only measures genuine new readings; coverage/staleness use currentBtc.
-    const isDataAnomalous = monitorDataQuality({
-      freshBtc:   btc,
-      prevBtc,
-      currentBtc,
-      btcIsStale: lastBtcFetchAt !== 0 && (now - lastBtcFetchAt > 2000),
-      kalshiData
-    });
+    const currentBtc = lastBtc;                    // last known-good price after this cycle
 
     lastFetched = {
       ...(kalshiData || {
@@ -210,11 +250,7 @@ async function runPoller() {
     // Drive trading on the SAME data — no second Kalshi fetch. Isolate its errors so a
     // trading exception doesn't trigger the poller's network backoff.
     try {
-      if (isDataAnomalous) {
-        console.log('[ENGINE] 🛑 Skipping trading tick due to data anomaly.');
-      } else {
-        await engine.tick(kalshiData?._rawMarkets ?? [], currentBtc);
-      }
+      await engine.tick(kalshiData?._rawMarkets ?? [], currentBtc);
     } catch (e) {
       console.error('Engine tick error:', e.message);
     }
@@ -261,6 +297,9 @@ wss.on('connection', (ws) => {
 
 (async () => {
   await engine.init();
+  if (BTC_SOURCE === 'websocket') coinbaseWs.start();
+  if (BTC_SOURCE === 'tradingview') tradingviewWs.start();
+  console.log(`[BTC] source = ${BTC_SOURCE}${BTC_SOURCE !== 'rest' ? ' (no REST fallback — see resolveBtcPrice comment)' : ''}`);
   runPoller();
   server.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
 })();

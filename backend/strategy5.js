@@ -1,28 +1,9 @@
 /**
- * Trading Strategy Module - V5 (Fair-Value / Statistical Edge)
- *
- * The honest "Renaissance-style" approach: not riskless arbitrage (that barely exists
- * and fees eat it), but a positive-expected-value edge from MISPRICING.
- *
- * A Kalshi "BTC ≥ $X at the top of the hour" contract is a binary option. Its fair
- * probability is computable from three things we already have or can estimate:
- *   • spot  — the live BTC price (fed in via recordPrice)
- *   • strike — parsed from each market's ticker / subtitle
- *   • σ_T   — BTC's volatility over the time remaining, estimated from realized vol
- *
- * Modelling BTC at expiry as Normal(spot, σ_T²) with no drift (sane over < 1 hour):
- *   fairYes = P(end ≥ strike) = Φ((spot − strike) / σ_T)
- *   fairNo  = 1 − fairYes
- *
- * EDGE of buying a side = fairProb − ask  (this IS the per-contract expected profit in $,
- * since the contract pays $1 if right, $0 if wrong). We only enter when that edge clears
- * a threshold big enough to cover the spread + Kalshi fees. We buy whichever side is most
- * underpriced — YES or NO — so we profit from the market being wrong, not from predicting
- * direction. It does NOT win every trade; it's positive-EV if σ is estimated well.
- *
- * NOTE: the edge fully realises at expiry. Paired with the engine's scalp exit, it captures
- * the profit when the market *converges* toward fair value (bid rises → TP); the risk is BTC
- * moving against us first (stop-loss). Positive-EV, not riskless.
+ * V5 (Fair-Value / Statistical Edge) — models BTC at a KXBTC15M contract's expiry as
+ * Normal(spot, σ_T²) to get a fair probability (fairYes = Φ((spot−strike)/σ_T)), then buys
+ * whichever side (YES/NO) is most underpriced vs. that fair value, if the edge clears fees.
+ * MIN_SAMPLES=30 within a 15-min window needs a price tick every ~30s — recorded backtest
+ * data (1 tick/min) can't satisfy this, so it's effectively live-only right now.
  */
 
 const MIN_PROB = 0.02; // display only (engine logs this); real filtering is the edge test below
@@ -32,6 +13,7 @@ const VOL_WINDOW_MS    = 15 * 60 * 1000; // history kept for the volatility esti
 const MIN_SAMPLES      = 30;             // need this many price points before trusting σ
 const MIN_SPAN_MS      = 60 * 1000;      // ...spanning at least this long
 const EDGE_THRESHOLD   = 0.05;           // require ≥5¢ expected profit/contract (covers spread + fees)
+const CYCLE_SECONDS    = 900;            // KXBTC15M resolves every 15 min (was 3600 for hourly KXBTCD)
 const MIN_SEC_TO_EXPIRY = 120;           // don't trade the final 2 min (σ_T→0 ⇒ overconfident)
 const ASK_FLOOR = 0.20;                  // MUST BE >= 0.20 to prevent spread from instantly hitting Stop Loss
 const ASK_CEIL  = 0.98;
@@ -58,11 +40,12 @@ function normCdf(z) {
   return 0.5 * (1 + erf(z / Math.SQRT2));
 }
 
-// Seconds until the next top-of-the-hour (the contract's resolution time). Minutes and
-// seconds are timezone-invariant, so any clock works.
+// Seconds until the next quarter-hour resolution. Minutes and seconds are
+// timezone-invariant, so any clock works. Tracks the backtester's MockDate, as in V7.
 function secondsToExpiry() {
   const now = new Date();
-  return 3600 - (now.getUTCMinutes() * 60 + now.getUTCSeconds());
+  const secondsIntoCycle = (now.getUTCMinutes() * 60 + now.getUTCSeconds()) % CYCLE_SECONDS;
+  return CYCLE_SECONDS - secondsIntoCycle;
 }
 
 // Realized-vol estimate of BTC's std-dev over the remaining time, in dollars.

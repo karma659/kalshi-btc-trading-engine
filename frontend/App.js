@@ -37,6 +37,8 @@ function BotPanel({ botState }) {
   const { totalProfit = 0, position = null, tradeHistory = [], config = {} } = botState || {};
   const isRunning = !!(botState && botState.lastUpdated);
   const mode = botState?.mode === 'live' ? 'live' : 'paper';
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState(null);
 
   // Determine if the last update is stale (> 5s old) — bot may not be running
   const stale = !botState?.lastUpdated || (Date.now() - new Date(botState.lastUpdated).getTime()) > 5000;
@@ -51,6 +53,29 @@ function BotPanel({ botState }) {
         body: JSON.stringify({ mode: next })
       });
     } catch (e) { console.error('Failed to set mode', e); }
+  };
+
+  const closePosition = async () => {
+    if (!position) return;
+    const warning = mode === 'live'
+      ? `Close this position now? This sells x${position.numContracts} ${position.subtitle} (${position.side.toUpperCase()}) at the current bid — real money.`
+      : `Close this paper position now?`;
+    if (!window.confirm(warning)) return;
+    setClosing(true);
+    setCloseError(null);
+    try {
+      const resp = await fetch('/api/close-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: position.ticker })
+      });
+      const result = await resp.json();
+      if (!result.ok) setCloseError(result.error || 'Failed to close position.');
+    } catch (e) {
+      setCloseError('Failed to reach the server.');
+    } finally {
+      setClosing(false);
+    }
   };
 
   return (
@@ -101,10 +126,29 @@ function BotPanel({ botState }) {
         <div className="position-card">
           <div className="position-header">
             <h3 style={{ fontSize: '1.1rem', margin: 0 }}>{position.subtitle}</h3>
-            <span className="side-badge" style={{ backgroundColor: position.side === 'yes' ? '#10b981' : '#ef4444' }}>
-              {position.side.toUpperCase()}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <span className="side-badge" style={{ backgroundColor: position.side === 'yes' ? '#10b981' : '#ef4444' }}>
+                {position.side.toUpperCase()}
+              </span>
+              <button
+                type="button"
+                onClick={closePosition}
+                disabled={closing || position.closeFailed}
+                title={position.closeFailed ? 'Previous close attempt needs manual review' : 'Sell this position now at the current bid'}
+                style={{
+                  fontSize: '0.75rem', padding: '0.25rem 0.55rem', borderRadius: '5px',
+                  border: '1px solid #f87171', background: 'transparent', color: '#f87171',
+                  cursor: (closing || position.closeFailed) ? 'not-allowed' : 'pointer',
+                  opacity: (closing || position.closeFailed) ? 0.5 : 1
+                }}
+              >
+                {closing ? 'Closing…' : 'Close Position'}
+              </button>
+            </div>
           </div>
+          {closeError && (
+            <div style={{ fontSize: '0.75rem', color: '#f87171', marginTop: '0.25rem' }}>{closeError}</div>
+          )}
 
           <div className="position-metrics" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.15)', borderRadius: '6px', marginTop: '0.25rem' }}>
             <div>

@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "v13": "node run-strategy13.js",
+    "v15:backtest": "ONLY=V15 V15_PERSIST=false V15_LEARN=false V15_EVAL=true node backtester.js",
+    "v15:train": "ONLY=V15 V15_PERSIST=true V15_LEARN=true V15_EXPLORE=true node backtester.js",
+    "both": "echo 'Start two terminals: npm start (V1 live) + npm run v13 (V13 paper)'"
   },
   "dependencies": {
     "cors": "^2.8.5",
