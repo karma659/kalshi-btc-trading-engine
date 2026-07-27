@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose an engineering or research improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or operator need does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe component boundaries, data flow, and failure behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and validation
+      description: How should the change be tested in replay and paper mode?
+    validations:
+      required: true

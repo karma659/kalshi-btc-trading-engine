@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: .
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4000
+      BTC_SOURCE: websocket
+      ALLOW_LIVE_MODE: "false"
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - runtime-data:/app/backend/past_trades
+    restart: unless-stopped
+
+volumes:
+  runtime-data:

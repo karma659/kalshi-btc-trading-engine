@@ -1,13 +1,26 @@
 {
-  "name": "kalshi-backend",
-  "version": "0.1.0",
+  "name": "kalshi-btc-trading-engine",
+  "version": "1.0.0",
+  "description": "Paper-first real-time research and execution engine for Kalshi BTC event contracts.",
+  "private": true,
+  "license": "UNLICENSED",
   "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/karma659/kalshi-btc-trading-engine.git"
+  },
   "scripts": {
     "start": "node index.js",
     "v13": "node run-strategy13.js",
     "v15:backtest": "ONLY=V15 V15_PERSIST=false V15_LEARN=false V15_EVAL=true node backtester.js",
     "v15:train": "ONLY=V15 V15_PERSIST=true V15_LEARN=true V15_EXPLORE=true node backtester.js",
-    "both": "echo 'Start two terminals: npm start (V1 live) + npm run v13 (V13 paper)'"
+    "both": "echo 'Start two terminals: npm start (V1 engine) + npm run v13 (V13 paper learner)'",
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test",
+    "validate": "npm run check && npm test"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -1,7 +1,7 @@
 /**
  * Kalshi single-process server + trading engine.
  *
- * ONE 50ms poll fetches Kalshi market data (every cycle) and Coinbase BTC (throttled).
+ * One shared poll fetches Kalshi market data and the selected BTC source.
  * That same data drives BOTH the trading engine (./bot) and the dashboard (REST + WS),
  * so each external API is hit exactly once per cycle instead of once per process.
  */
@@ -21,10 +21,10 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Tuning ────────────────────────────────────────────────────────────────────
-const BASE_POLL_MS        = 100;     // Kalshi poll cadence (the "once with 50ms")
-const MAX_POLL_MS         = 100;  // backoff ceiling on errors
-const COINBASE_THROTTLE_MS = 100;  // Coinbase rate-limits harder; 2/s is plenty for trend + UI
-const BROADCAST_THROTTLE_MS = 250; // WS push cadence to browsers (data still refreshes at 50ms)
+const BASE_POLL_MS         = 100;  // Normal Kalshi poll cadence.
+const MAX_POLL_MS          = 5000; // Exponential-backoff ceiling after public-data errors.
+const COINBASE_THROTTLE_MS = 100;  // Applies when explicit REST pricing is selected.
+const BROADCAST_THROTTLE_MS = 250; // Browser push cadence; engine ticks remain independent.
 
 // BTC price source switch. 'websocket' (default): real-time Coinbase WS ticker, no
 // polling-interval lag. If the feed hasn't connected yet or has gone stale, we do NOT
@@ -168,6 +168,20 @@ app.get('/api/bot-state', (req, res) => {
   res.json(engine.getDashboardState());
 });
 
+// Liveness and readiness details for local operators and container health checks.
+// This endpoint intentionally contains no account or position information.
+app.get('/healthz', (req, res) => {
+  const dashboardState = engine.getDashboardState();
+  res.json({
+    status: 'ok',
+    mode: engine.getMode(),
+    marketDataReady: Boolean(lastFetched),
+    btcPriceReady: Number.isFinite(lastFetched?.btcPrice),
+    lastMarketFetchAt: lastFetched?.fetchedAt || null,
+    engineUpdatedAt: dashboardState.lastUpdated || null
+  });
+});
+
 // Manual exit, triggered by the dashboard's Close Position button.
 app.post('/api/close-position', async (req, res) => {
   const ticker = req.body?.ticker;
@@ -183,6 +197,7 @@ app.post('/api/close-position', async (req, res) => {
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
+const host = process.env.HOST || '127.0.0.1';
 const port = process.env.PORT || 4000;
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -301,5 +316,5 @@ wss.on('connection', (ws) => {
   if (BTC_SOURCE === 'tradingview') tradingviewWs.start();
   console.log(`[BTC] source = ${BTC_SOURCE}${BTC_SOURCE !== 'rest' ? ' (no REST fallback — see resolveBtcPrice comment)' : ''}`);
   runPoller();
-  server.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
+  server.listen(port, host, () => console.log(`Server listening on http://${host}:${port}`));
 })();

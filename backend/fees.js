@@ -11,7 +11,7 @@
  *   • FEE_RATE = 0.07 for the general schedule
  *
  * The fee is largest at P = 0.50 (P·(1−P) peaks there) and vanishes toward 0/1 — i.e. you
- * pay the most to trade coin-flips, which is exactly the band V1/V6 target. Fees are
+ * pay the most near a balanced 50% market, which is the band V1/V6 target. Fees are
  * charged on entry and again on any pre-settlement sell; contracts held to settlement
  * incur no exit fee.
  *

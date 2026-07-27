@@ -1,6 +1,6 @@
 /**
- * V1 (Volatility Scalping) — buys the KXBTC15M contract closest to a 50/50 coin-flip
- * price, betting on a quick swing for a take-profit.
+ * V1 (Volatility Scalping) — selects a KXBTC15M side near 50% implied probability,
+ * targeting short-horizon quote movement for a configured take-profit.
  */
 
 const MIN_PROB = 0.40;
@@ -27,7 +27,7 @@ function evaluateMarket(m) {
   // Pick the side closer to 50% (most balanced = most uncertain); tie-break on cheaper ask.
   const yes = { side: 'yes', ask: yesAsk, distFromFifty: distFromFifty(yesAsk) };
   const no  = { side: 'no',  ask: noAsk,  distFromFifty: distFromFifty(noAsk)  };
-  if (yes.distFromFifty !== no.distFromFifty) return yes.distFromFifty > no.distFromFifty ? yes : no;
+  if (yes.distFromFifty !== no.distFromFifty) return yes.distFromFifty < no.distFromFifty ? yes : no;
   return yes.ask <= no.ask ? yes : no;
 }
 

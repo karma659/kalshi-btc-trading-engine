@@ -1,0 +1,15 @@
+.git
+.github
+.env
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+backend/past_trades
+backend/.venv-ml
+**/__pycache__
+**/*.pyc
+*.pem
+*.log
+.DS_Store
+work

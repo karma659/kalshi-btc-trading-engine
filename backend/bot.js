@@ -18,25 +18,11 @@ const crypto = require('crypto');
 const { kalshiFee } = require('./fees');
 require('dotenv').config();
 
-// V7 (Favorite-Longshot Harvest) is the main deployed strategy — the only one that
-// backtested net-positive after fees held to settlement over a full 7-day run.
-// V10 (RSI-3 Sell Signal, gated) runs alongside it: its gated "settle play" backtested
-// +$20.46 on just 6 trades — not enough to trust yet, so it's here to accumulate a real
-// paper track record (mode defaults to 'paper' — see bot-config.json) rather than as a
-// vetted strategy. Both run concurrently; the engine's activeTickers guard (below)
-// stops them from ever buying the same contract twice.
+// V1 is the only strategy wired into the default engine process. Other strategy modules
+// remain available to the replay engine and controlled paper experiments; they are not
+// silently activated here.
 const strategy1 = require('./strategy');
-const strategy7 = require('./strategy7');
-const strategy10 = require('./strategy10');
-const strategy13 = require('./strategy13');
-const strategy14 = require('./strategy14');
-const strategy15 = require('./strategy15');
-// V13 runs in a separate process: node run-strategy13.js
-// This keeps live trading (V1) isolated from V13's paper-mode learning
 
-// V15 is the active strategy and starts automatically with `npm start`. It restores its
-// saved Q-table, observes BTC, chooses entries/exits, learns from completed trades, and
-// persists its policy without requiring any environment flags or separate commands.
 const strategies = [strategy1];
 
 const pastTradesDir = path.join(__dirname, 'past_trades');
@@ -59,6 +45,11 @@ let config = {
   hardExitPct: 1, // 90% of max profit is good enough to take — avoids leaving money on the table when the price swings back after a big move
   mode: 'paper'
 };
+
+// A persisted config file is not enough to make live execution possible. The operator
+// must opt in at process start, which prevents an old `mode: live` value from silently
+// reactivating live mode after a restart.
+const LIVE_MODE_ALLOWED = process.env.ALLOW_LIVE_MODE === 'true';
 
 
 
@@ -186,7 +177,7 @@ function saveState() {
 
 // ─── Config & mode (paper | live) ──────────────────────────────────────────────
 // Single source of truth is bot-config.json. We hot-reload it on change (mtime poll,
-// throttled so the 50ms loop doesn't stat disk every tick) and write it back on changes
+// throttled so the high-frequency loop doesn't stat disk every tick) and write it back on changes
 // made in-process (e.g. a dashboard mode toggle), so config survives restarts.
 let lastConfigReadAt = 0;
 const CONFIG_CACHE_MS = 1000;
@@ -299,11 +290,21 @@ try {
 }
 
 function getMode() {
-  return loadConfig().mode;
+  const configuredMode = loadConfig().mode;
+  return configuredMode === 'live' && LIVE_MODE_ALLOWED && TRADING_ENABLED ? 'live' : 'paper';
 }
 
 function setMode(mode) {
   const next = mode === 'live' ? 'live' : 'paper';
+  if (next === 'live' && (!LIVE_MODE_ALLOWED || !TRADING_ENABLED)) {
+    config.mode = 'paper';
+    writeConfig();
+    const reason = !LIVE_MODE_ALLOWED
+      ? 'Restart with ALLOW_LIVE_MODE=true after completing paper-mode validation.'
+      : 'Configure a valid API key and readable private key, then restart.';
+    console.warn(`[ENGINE] Live mode rejected. ${reason}`);
+    return 'paper';
+  }
   config.mode = next;
   writeConfig(); // persist so the toggle survives restarts and isn't clobbered by reload
   return next;
@@ -342,7 +343,7 @@ function ts() {
   return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
 
-// Console-only status messages, throttled to ~1/sec so the 50ms loop doesn't flood.
+// Console-only status messages, throttled to ~1/sec so the event loop doesn't flood.
 let lastStatusLogAt = 0;
 function logStatus(msg) {
   const now = Date.now();
@@ -1000,7 +1001,7 @@ async function tick(markets, btcPrice) {
 
       // Don't stop out while BTC is still within $NEAR_STRIKE_USD of the strike — the
       // outcome is still genuinely undecided this close, so a stop-loss here is cutting a
-      // coin-flip rather than a real loser; give it room to resolve instead.
+      // genuinely unresolved near-strike market rather than a confirmed loser; give it room.
       const strike = strikeOf(myMarket);
       const nearStrike = Number.isFinite(strike) && Number.isFinite(btcPrice)
         && Math.abs(btcPrice - strike) <= NEAR_STRIKE_USD;
@@ -1047,6 +1048,7 @@ async function tick(markets, btcPrice) {
 async function init() {
   loadState();
   console.log(`[ENGINE] Starting with ${strategies.length} ${strategies.length === 1 ? 'strategy' : 'parallel strategies'}: ${strategies.map(s => s.name).join(', ')}`);
+  console.log(`[ENGINE] Live-mode opt-in: ${LIVE_MODE_ALLOWED ? 'ENABLED' : 'DISABLED'} (ALLOW_LIVE_MODE)`);
 
   // Load bot-config.json first (it carries mode and any dashboard-made changes), THEN
   // sync bot.js's config literal over it. fs.watch only catches edits made while the
@@ -1082,7 +1084,7 @@ module.exports = {
   setMode,
   getDashboardState,
   manualClosePosition,
-  strategyName: 'Parallel Engine (4 Strategies)'
+  strategyName: strategies.map(s => s.name).join(', ')
 };
 
 // Guard: this is a module now. Running it directly is a mistake post-merge.
